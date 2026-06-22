@@ -248,6 +248,21 @@ const OrdersPanel: Component = () => {
     return store.gameState.airships.find((a) => a.id === store.selectedAirshipId) || null;
   });
 
+  const validateCoordinate = (xStr: string, yStr: string): { valid: boolean; error?: string; x?: number; y?: number } => {
+    const x = Number(xStr);
+    const y = Number(yStr);
+    if (isNaN(x) || isNaN(y)) {
+      return { valid: false, error: '请输入有效数字' };
+    }
+    if (x < 0 || x >= MAP_WIDTH) {
+      return { valid: false, error: `X坐标必须在 0 到 ${MAP_WIDTH - 1} 之间` };
+    }
+    if (y < 0 || y >= MAP_HEIGHT) {
+      return { valid: false, error: `Y坐标必须在 0 到 ${MAP_HEIGHT - 1} 之间` };
+    }
+    return { valid: true, x, y };
+  };
+
   const addOrder = () => {
     const ship = selectedAirship();
     if (!ship) {
@@ -255,14 +270,25 @@ const OrdersPanel: Component = () => {
       return;
     }
 
+    let params = {};
+    if (orderType() === ActionType.MOVE) {
+      if (!targetX() || !targetY()) {
+        store.addNotification('请输入目标坐标');
+        return;
+      }
+      const validation = validateCoordinate(targetX(), targetY());
+      if (!validation.valid) {
+        store.addNotification(validation.error!);
+        return;
+      }
+      params = { x: validation.x!, y: validation.y! };
+    }
+
     const order: Order = {
       player_id: store.currentPlayer!.id,
       ship_id: ship.id,
       type: orderType(),
-      params:
-        orderType() === ActionType.MOVE && targetX() && targetY()
-          ? { x: Number(targetX()), y: Number(targetY()) }
-          : {},
+      params,
     };
 
     setPendingOrders((prev) => [...prev, order]);

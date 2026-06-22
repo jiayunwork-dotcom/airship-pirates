@@ -1,5 +1,6 @@
-import { Component, createSignal, createEffect, createMemo, For, Show } from 'solid-js';
+import { Component, createSignal, createMemo, For, Show } from 'solid-js';
 import { GameProvider, useGameStore } from './store/gameStore';
+import type { City, Airship, Battle } from './types/game';
 import Lobby from './components/Lobby';
 import GameBoard from './components/GameBoard';
 import BattleScreen from './components/BattleScreen';
@@ -57,17 +58,17 @@ const GameUI: Component = () => {
 
   const currentCity = createMemo(() => {
     if (!store.selectedCityId || !store.gameState) return null;
-    return store.gameState.cities.find((c) => c.id === store.selectedCityId) || null;
+    return store.gameState.cities.find((c: City) => c.id === store.selectedCityId) || null;
   });
 
   const currentAirship = createMemo(() => {
     if (!store.selectedAirshipId || !store.gameState) return null;
-    return store.gameState.airships.find((a) => a.id === store.selectedAirshipId) || null;
+    return store.gameState.airships.find((a: Airship) => a.id === store.selectedAirshipId) || null;
   });
 
   const currentBattle = createMemo(() => {
     if (!store.activeBattleId || !store.gameState) return null;
-    return store.gameState.battles.find((b) => b.id === store.activeBattleId) || null;
+    return store.gameState.battles.find((b: Battle) => b.id === store.activeBattleId) || null;
   });
 
   const isCityPanelOpen = createMemo(() => {
@@ -137,14 +138,6 @@ interface AppContentProps {
 }
 
 const AppContent: Component<AppContentProps> = (props) => {
-  const store = useGameStore();
-
-  createEffect(() => {
-    if (store.currentRoom && store.gameState && props.view() === 'home') {
-      props.setView('game');
-    }
-  });
-
   return (
     <div class="w-full h-full relative min-h-screen">
       <NotificationToast />

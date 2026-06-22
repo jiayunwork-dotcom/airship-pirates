@@ -181,23 +181,31 @@ async def get_config():
 
 @router.websocket("/ws/{room_id}/{player_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, player_id: str):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        await websocket.close(code=1008, reason=f"Room {room_id} not found")
+        return
+
+    player = next((p for p in state.players if p.id == player_id), None)
+    if player is None:
+        await websocket.close(code=1008, reason=f"Player {player_id} not in room")
+        return
+
     await ws_manager.connect(websocket, room_id, player_id)
     try:
-        state = await room_manager.get_state(room_id)
-        if state:
-            state_dict = state.model_dump(mode="json")
-            await ws_manager.send_private(room_id, player_id, {
-                "type": "initial_state",
-                "data": state_dict
-            })
-        
+        state_dict = state.model_dump(mode="json")
+        await ws_manager.send_private(room_id, player_id, {
+            "type": "initial_state",
+            "data": state_dict
+        })
+
         while True:
             data = await websocket.receive_text()
             try:
                 import json
                 message = json.loads(data)
                 msg_type = message.get("type")
-                
+
                 if msg_type == "ping":
                     await ws_manager.send_private(room_id, player_id, {
                         "type": "pong",

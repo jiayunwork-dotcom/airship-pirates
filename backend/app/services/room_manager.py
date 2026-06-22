@@ -103,23 +103,38 @@ class RoomManager:
         state = await self.get_state(room_id)
         if state is None:
             return None
-        
+
         if state.phase != "orders":
             raise ValueError("Not accepting orders at this phase")
-        
+
         player = next((p for p in state.players if p.id == player_id), None)
         if player is None:
             return None
-        
+
+        player_ship_ids = [a.id for a in state.airships if a.player_id == player_id]
+        for order in orders:
+            if order.ship_id not in player_ship_ids:
+                raise ValueError(f"Ship {order.ship_id} does not belong to player")
+
+            if order.type == "move":
+                x = order.params.get("x")
+                y = order.params.get("y")
+                if x is None or y is None:
+                    raise ValueError("Move order requires x and y coordinates")
+                if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                    raise ValueError("Coordinates must be numbers")
+                if x < 0 or y < 0 or x > 1000 or y > 1000:
+                    raise ValueError("Coordinates must be between 0 and 1000")
+
         state.pending_orders = [o for o in state.pending_orders if o.player_id != player_id]
         state.pending_orders.extend(orders)
-        
+
         await self._save_state_to_store(state)
         await ws_manager.broadcast_event(room_id, "orders_submitted", {
             "player_id": player_id,
             "order_count": len(orders)
         })
-        
+
         return state
 
     async def submit_battle_actions(self, room_id: str, player_id: str, battle_id: str, actions: List[BattleAction]) -> Optional[GameState]:

@@ -41,7 +41,7 @@ export type GameStore = GameStoreState & GameStoreActions;
 const GameContext = createContext<GameStore>();
 
 const API_BASE_URL = 'http://localhost:8000/api';
-const WS_BASE_URL = 'ws://localhost:8000/ws';
+const WS_BASE_URL = 'ws://localhost:8000/api/ws';
 
 const PLAYER_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c'];
 
@@ -219,10 +219,10 @@ function createGameStore(): GameStore {
   };
 
   const createRoom = async (playerName: string, maxPlayers: number) => {
+    const roomId = 'ROOM' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    const pid = getPlayerId();
+    const colorIdx = 0;
     try {
-      const roomId = 'ROOM' + Math.random().toString(36).substring(2, 6).toUpperCase();
-      const pid = getPlayerId();
-      const colorIdx = 0;
       const res = await fetch(`${API_BASE_URL}/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,8 +232,7 @@ function createGameStore(): GameStore {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || '创建房间失败');
       }
-      const state: GameState = await res.json();
-      updateFromState(state);
+      await res.json();
 
       const joinRes = await fetch(`${API_BASE_URL}/rooms/${roomId}/join`, {
         method: 'POST',
@@ -249,17 +248,22 @@ function createGameStore(): GameStore {
         throw new Error(err.detail || '加入房间失败');
       }
       const joinedState: GameState = await joinRes.json();
-      updateFromState(joinedState);
+
       await connectWebSocket(roomId, pid);
+
+      updateFromState(joinedState);
     } catch (e: any) {
+      setGameState(null);
+      setCurrentRoom(null);
+      setCurrentPlayer(null);
       setError(e.message || '创建房间失败');
       throw e;
     }
   };
 
   const joinRoom = async (roomId: string, playerName: string) => {
+    const pid = getPlayerId();
     try {
-      const pid = getPlayerId();
       const existingPlayer = gameState()?.players.findIndex((p) => p.id === pid) ?? -1;
       const colorIdx = Math.max(0, (gameState()?.players.length || 0) % PLAYER_COLORS.length);
 
@@ -277,9 +281,14 @@ function createGameStore(): GameStore {
         throw new Error(err.detail || '加入房间失败');
       }
       const joinedState: GameState = await joinRes.json();
-      updateFromState(joinedState);
+
       await connectWebSocket(roomId, pid);
+
+      updateFromState(joinedState);
     } catch (e: any) {
+      setGameState(null);
+      setCurrentRoom(null);
+      setCurrentPlayer(null);
       setError(e.message || '加入房间失败');
       throw e;
     }
