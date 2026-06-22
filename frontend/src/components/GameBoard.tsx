@@ -3,6 +3,7 @@ import { useGameStore } from '../store/gameStore';
 import AirshipPanel from './AirshipPanel';
 import ModuleBuilder from './ModuleBuilder';
 import BattleReportPanel from './BattleReportPanel';
+import DiplomacyPanel from './DiplomacyPanel';
 import { ActionType, AltitudeLevel, WeatherType } from '../types/game';
 import type { Airship, City, Waypoint, Weather, Order } from '../types/game';
 import type { Component } from 'solid-js';
@@ -931,6 +932,12 @@ const GameMap: Component = () => {
                 airship.altitude === AltitudeLevel.LOW ? 8 : 
                 airship.altitude === AltitudeLevel.MEDIUM ? 0 : 
                 airship.altitude === AltitudeLevel.HIGH ? -8 : -12;
+              
+              const currentPlayer = store.currentPlayer;
+              const isAlly = currentPlayer && airship.player_id !== currentPlayer.id
+                ? currentPlayer.alliances.includes(airship.player_id)
+                : false;
+              
               return (
                 <g
                   onClick={() => store.setSelectedAirship(airship.id)}
@@ -964,6 +971,18 @@ const GameMap: Component = () => {
                         repeatCount="indefinite"
                       />
                     </circle>
+                  )}
+                  {isAlly && !isSelected && (
+                    <circle
+                      cx={x}
+                      cy={y + altitudeOffset}
+                      r={HEX_SIZE * 0.6}
+                      fill="none"
+                      stroke="#22c55e"
+                      stroke-width={2.5}
+                      stroke-dasharray="5 4"
+                      opacity={0.9}
+                    />
                   )}
                   <circle
                     cx={x}
@@ -1048,9 +1067,22 @@ const GameBoard: Component<{ onLeaveHome: () => void }> = (props) => {
       <div class="flex-1 flex overflow-hidden">
         <PlayerSidebar onLeaveHome={props.onLeaveHome} />
 
-        <div class="flex-1 flex flex-col overflow-hidden">
+        <div class="flex-1 flex flex-col overflow-hidden relative">
           <GameMap />
           <OrdersPanel />
+          
+          <button
+            onClick={() => store.setShowDiplomacyPanel(true)}
+            class="absolute bottom-24 left-4 z-20 flex items-center gap-2 px-4 py-2 bg-gradient-to-b from-amber-700 to-amber-800 hover:from-amber-600 hover:to-amber-700 text-amber-100 rounded-lg border-2 border-brass shadow-lg transition-all active:scale-95"
+          >
+            <span class="text-xl">🤝</span>
+            <span class="text-sm font-bold">外交</span>
+            <Show when={store.gameState?.pending_invites.filter(i => i.to_player_id === store.currentPlayer?.id).length || 0 > 0}>
+              <span class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center border-2 border-red-300">
+                {store.gameState?.pending_invites.filter(i => i.to_player_id === store.currentPlayer?.id).length}
+              </span>
+            </Show>
+          </button>
         </div>
 
         <div class="w-80 border-l-2 border-brass shrink-0">
@@ -1088,6 +1120,61 @@ const GameBoard: Component<{ onLeaveHome: () => void }> = (props) => {
       </Show>
 
       <BattleReportPanel />
+
+      <Show when={store.showDiplomacyPanel}>
+        <DiplomacyPanel />
+      </Show>
+
+      <Show when={store.showBetrayalWarning}>
+        <BetrayalWarningOverlay />
+      </Show>
+    </div>
+  );
+};
+
+const BetrayalWarningOverlay: Component = () => {
+  const store = useGameStore();
+
+  const isCurrentPlayerBetrayer = () => {
+    return store.currentPlayer?.id === store.betrayalInfo?.betrayer;
+  };
+
+  const otherPlayerName = () => {
+    if (!store.betrayalInfo) return '盟友';
+    return isCurrentPlayerBetrayer()
+      ? store.betrayalInfo.victim_name
+      : store.betrayalInfo.betrayer_name;
+  };
+
+  return (
+    <div class="fixed inset-0 z-[100] pointer-events-none">
+      <div class="absolute inset-0 bg-red-600/40" style={{ animation: 'betrayalFlash 0.5s ease-in-out 3' }} />
+      <div class="absolute inset-0 flex items-center justify-center">
+        <div class="bg-gradient-to-b from-red-900/95 to-stone-900/95 border-4 border-red-500 rounded-xl p-8 shadow-2xl text-center max-w-md mx-4 pointer-events-auto" style={{ animation: 'betrayalShake 0.5s ease-in-out 3' }}>
+          <div class="text-6xl mb-4">💔</div>
+          <h2 class="text-3xl font-bold text-red-400 mb-3">联盟破裂！</h2>
+          <p class="text-amber-200 text-lg mb-2">
+            {store.betrayalInfo?.reason || '背叛行为发生'}
+          </p>
+          <p class="text-amber-200/70 text-sm mb-4">
+            与 {otherPlayerName()} 的联盟已解散
+          </p>
+          <Show when={isCurrentPlayerBetrayer()}>
+            <div class="bg-red-900/50 rounded-lg p-3 mb-4 border border-red-500/50">
+              <p class="text-red-300 text-sm font-medium">⚠️ 背叛者惩罚</p>
+              <p class="text-amber-200/80 text-xs mt-1">
+                3回合内：所有城市声望 -20，NPC商船逃跑概率翻倍
+              </p>
+            </div>
+          </Show>
+          <button
+            onClick={() => store.dismissBetrayalWarning()}
+            class="px-6 py-2 bg-red-700 hover:bg-red-600 text-red-100 rounded-lg font-medium transition-colors border border-red-500/50"
+          >
+            我知道了
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

@@ -24,6 +24,17 @@
     0%, 100% { transform: translateY(0px); }
     50% { transform: translateY(-10px); }
   }
+
+  @keyframes betrayalFlash {
+    0%, 100% { opacity: 0; }
+    50% { opacity: 0.6; }
+  }
+
+  @keyframes betrayalShake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-10px); }
+    75% { transform: translateX(10px); }
+  }
 }
 
 @layer base {

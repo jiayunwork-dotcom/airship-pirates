@@ -15,6 +15,9 @@ export interface GameStoreState {
   activeBattleId: string | null;
   notifications: string[];
   error: string | null;
+  showDiplomacyPanel: boolean;
+  showBetrayalWarning: boolean;
+  betrayalInfo: { betrayer: string; victim: string; reason: string; betrayer_name: string; victim_name: string } | null;
 }
 
 export interface GameStoreActions {
@@ -34,6 +37,12 @@ export interface GameStoreActions {
   fetchRooms: () => Promise<void>;
   setPlayerReady: (ready: boolean) => Promise<void>;
   processTurn: () => Promise<void>;
+  setShowDiplomacyPanel: (show: boolean) => void;
+  inviteAlliance: (targetPlayerId: string) => Promise<void>;
+  respondInvite: (inviteId: string, accept: boolean) => Promise<void>;
+  dissolveAlliance: (allyPlayerId: string) => Promise<void>;
+  suggestHeading: (allyPlayerId: string, shipId: string, targetPos: { x: number; y: number }) => Promise<void>;
+  dismissBetrayalWarning: () => void;
 }
 
 export type GameStore = GameStoreState & GameStoreActions;
@@ -101,6 +110,9 @@ function createGameStore(): GameStore {
   const [activeBattleId, setActiveBattleId] = createSignal<string | null>(null);
   const [notifications, setNotifications] = createSignal<string[]>([]);
   const [error, setError] = createSignal<string | null>(null);
+  const [showDiplomacyPanel, setShowDiplomacyPanel] = createSignal(false);
+  const [showBetrayalWarning, setShowBetrayalWarning] = createSignal(false);
+  const [betrayalInfo, setBetrayalInfo] = createSignal<{ betrayer: string; victim: string; reason: string; betrayer_name: string; victim_name: string } | null>(null);
 
   const addNotification = (msg: string) => {
     setNotifications((prev) => [...prev, msg]);
@@ -144,6 +156,22 @@ function createGameStore(): GameStore {
         updateFromState(state);
       } else if (type === 'event') {
         addNotification(`事件: ${msg.event_type || ''}`);
+        if (msg.event_type === 'alliance_formed') {
+          addNotification('🤝 新的联盟建立了！');
+        } else if (msg.event_type === 'alliance_dissolved') {
+          addNotification('💔 联盟解散了');
+          const state = gameState();
+          const playerA = state?.players.find(p => p.id === msg.data?.player_a_id);
+          const playerB = state?.players.find(p => p.id === msg.data?.player_b_id);
+          setShowBetrayalWarning(true);
+          setBetrayalInfo({
+            betrayer: msg.data?.betrayer_id || msg.data?.player_a_id || '',
+            victim: msg.data?.victim_id || msg.data?.player_b_id || '',
+            reason: msg.data?.reason || '联盟解散',
+            betrayer_name: msg.data?.betrayer_name || playerA?.name || '未知玩家',
+            victim_name: msg.data?.victim_name || playerB?.name || '未知玩家',
+          });
+        }
       } else if (type === 'turn_start') {
         addNotification(`第 ${msg.data?.turn || ''} 回合开始`);
       } else if (type === 'battle_started') {
@@ -156,6 +184,12 @@ function createGameStore(): GameStore {
         addNotification(`${msg.player_name}: ${msg.message}`);
       } else if (type === 'notification') {
         addNotification(msg.message || '');
+      } else if (type === 'alliance_invite') {
+        addNotification(`📨 收到来自 ${msg.data?.from_player_name || ''} 的联盟邀请！`);
+      } else if (type === 'alliance_invite_rejected') {
+        addNotification('❌ 联盟邀请被拒绝');
+      } else if (type === 'heading_suggestion') {
+        addNotification(`🧭 收到盟友的航向建议！`);
       } else if (type === 'error') {
         setError(msg.message || '发生错误');
       } else if (type === 'pong') {
@@ -438,6 +472,114 @@ function createGameStore(): GameStore {
     setRooms([]);
   };
 
+  const inviteAlliance = async (targetPlayerId: string) => {
+    try {
+      const rid = currentRoom()?.id as string;
+      const pid = getPlayerId();
+      const res = await fetch(`${API_BASE_URL}/rooms/${rid}/alliance/invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: pid,
+          target_player_id: targetPlayerId,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '发起联盟邀请失败');
+      }
+      const state: GameState = await res.json();
+      updateFromState(state);
+      addNotification('联盟邀请已发送');
+    } catch (e: any) {
+      setError(e.message || '发起联盟邀请失败');
+      throw e;
+    }
+  };
+
+  const respondInvite = async (inviteId: string, accept: boolean) => {
+    try {
+      const rid = currentRoom()?.id as string;
+      const pid = getPlayerId();
+      const res = await fetch(`${API_BASE_URL}/rooms/${rid}/alliance/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: pid,
+          invite_id: inviteId,
+          accept,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '回应邀请失败');
+      }
+      const state: GameState = await res.json();
+      updateFromState(state);
+      addNotification(accept ? '已接受联盟邀请' : '已拒绝联盟邀请');
+    } catch (e: any) {
+      setError(e.message || '回应邀请失败');
+      throw e;
+    }
+  };
+
+  const dissolveAlliance = async (allyPlayerId: string) => {
+    try {
+      const rid = currentRoom()?.id as string;
+      const pid = getPlayerId();
+      const res = await fetch(`${API_BASE_URL}/rooms/${rid}/alliance/dissolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: pid,
+          ally_player_id: allyPlayerId,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '解散联盟失败');
+      }
+      const state: GameState = await res.json();
+      updateFromState(state);
+      addNotification('联盟已解散');
+    } catch (e: any) {
+      setError(e.message || '解散联盟失败');
+      throw e;
+    }
+  };
+
+  const suggestHeading = async (allyPlayerId: string, shipId: string, targetPos: { x: number; y: number }) => {
+    try {
+      const rid = currentRoom()?.id as string;
+      const pid = getPlayerId();
+      const res = await fetch(`${API_BASE_URL}/rooms/${rid}/alliance/suggest_heading`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: pid,
+          ally_player_id: allyPlayerId,
+          ship_id: shipId,
+          target_position: targetPos,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '发送航向建议失败');
+      }
+      const state: GameState = await res.json();
+      updateFromState(state);
+      addNotification('航向建议已发送');
+    } catch (e: any) {
+      setError(e.message || '发送航向建议失败');
+      throw e;
+    }
+  };
+
+  const dismissBetrayalWarning = () => {
+    setShowBetrayalWarning(false);
+    setBetrayalInfo(null);
+  };
+
   onCleanup(() => {
     disconnectWebSocket();
   });
@@ -460,6 +602,9 @@ function createGameStore(): GameStore {
     get activeBattleId() { return activeBattleId(); },
     get notifications() { return notifications(); },
     get error() { return error(); },
+    get showDiplomacyPanel() { return showDiplomacyPanel(); },
+    get showBetrayalWarning() { return showBetrayalWarning(); },
+    get betrayalInfo() { return betrayalInfo(); },
     createRoom,
     joinRoom,
     leaveRoom,
@@ -476,6 +621,12 @@ function createGameStore(): GameStore {
     fetchRooms,
     setPlayerReady,
     processTurn,
+    setShowDiplomacyPanel,
+    inviteAlliance,
+    respondInvite,
+    dissolveAlliance,
+    suggestHeading,
+    dismissBetrayalWarning,
   };
 }
 

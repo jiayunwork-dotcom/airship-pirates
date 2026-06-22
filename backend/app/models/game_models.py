@@ -173,6 +173,8 @@ class Player(BaseModel):
     ready: bool = False
     color: str = "#3498db"
     score: int = 0
+    traitor_debuff_turns: int = 0
+    suggested_headings: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class Airship(BaseModel):
@@ -279,6 +281,34 @@ class BattleReport(BaseModel):
     turn_number: int = 0
 
 
+class Alliance(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    player_a_id: str
+    player_b_id: str
+    trust_level: int = 1
+    turns_without_betrayal: int = 0
+    created_at_turn: int = 0
+    active: bool = True
+
+
+class PendingInvite(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    from_player_id: str
+    from_player_name: str
+    to_player_id: str
+    created_at_turn: int = 0
+
+
+class WaypointPassRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    waypoint_id: str
+    passing_player_id: str
+    passing_ship_name: str
+    turn: int = 0
+
+
 class BattleAction(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: ActionType
@@ -333,6 +363,9 @@ class GameState(BaseModel):
     scores: Dict[str, int] = Field(default_factory=dict)
     event_log: List[str] = Field(default_factory=list)
     battle_reports: List[BattleReport] = Field(default_factory=list)
+    alliances: List[Alliance] = Field(default_factory=list)
+    pending_invites: List[PendingInvite] = Field(default_factory=list)
+    waypoint_pass_records: List[WaypointPassRecord] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -356,3 +389,26 @@ class BattleActionsSubmitRequest(BaseModel):
     player_id: str
     battle_id: str
     actions: List[BattleAction]
+
+
+class InviteAllianceRequest(BaseModel):
+    player_id: str
+    target_player_id: str
+
+
+class RespondInviteRequest(BaseModel):
+    player_id: str
+    invite_id: str
+    accept: bool
+
+
+class DissolveAllianceRequest(BaseModel):
+    player_id: str
+    ally_player_id: str
+
+
+class SuggestHeadingRequest(BaseModel):
+    player_id: str
+    ally_player_id: str
+    ship_id: str
+    target_position: Dict[str, float]

@@ -1,12 +1,13 @@
 import json
 import asyncio
-from typing import Optional, List
+from typing import Optional, List, Dict
 from app.models.game_models import (
     GameState, Player, Order, BattleAction, BattlePhase
 )
 from app.core.game_engine import (
     initialize_game, assign_player_to_game, process_turn,
-    check_all_players_ready, start_game
+    check_all_players_ready, start_game, create_alliance_invite,
+    respond_to_invite, dissolve_alliance, suggest_heading
 )
 from app.core.redis_client import RedisClient
 from app.services.websocket_manager import ws_manager
@@ -230,6 +231,103 @@ class RoomManager:
         await ws_manager.disconnect(room_id, player_id)
         await ws_manager.broadcast_state(room_id, state)
         await ws_manager.broadcast_event(room_id, "player_kicked", {"player_id": player_id})
+        
+        return state
+
+    async def invite_alliance(self, room_id: str, from_player_id: str, target_player_id: str) -> Optional[GameState]:
+        state = await self.get_state(room_id)
+        if state is None:
+            return None
+        
+        if state.phase == "lobby":
+            raise ValueError("Game has not started yet")
+        
+        invite = create_alliance_invite(state, from_player_id, target_player_id)
+        if invite is None:
+            raise ValueError("Could not create alliance invite")
+        
+        await self._save_state_to_store(state)
+        await ws_manager.broadcast_state(room_id, state)
+        
+        await ws_manager.send_private(room_id, target_player_id, {
+            "type": "alliance_invite",
+            "data": {
+                "invite_id": invite.id,
+                "from_player_id": from_player_id,
+                "from_player_name": invite.from_player_name,
+                "created_at_turn": invite.created_at_turn
+            }
+        })
+        
+        return state
+
+    async def respond_invite(self, room_id: str, player_id: str, invite_id: str, accept: bool) -> Optional[GameState]:
+        state = await self.get_state(room_id)
+        if state is None:
+            return None
+        
+        success = respond_to_invite(state, invite_id, player_id, accept)
+        if not success:
+            raise ValueError("Could not respond to invite")
+        
+        await self._save_state_to_store(state)
+        await ws_manager.broadcast_state(room_id, state)
+        
+        invite = next((inv for inv in state.pending_invites if inv.id == invite_id), None)
+        if accept:
+            await ws_manager.broadcast_event(room_id, "alliance_formed", {
+                "player_a_id": state.players[-1].id if state.players else "",
+                "player_b_id": player_id
+            })
+        else:
+            from_player_id = invite.from_player_id if invite else ""
+            await ws_manager.send_private(room_id, from_player_id, {
+                "type": "alliance_invite_rejected",
+                "data": {
+                    "from_player_id": player_id
+                }
+            })
+        
+        return state
+
+    async def dissolve_alliance(self, room_id: str, player_id: str, ally_player_id: str) -> Optional[GameState]:
+        state = await self.get_state(room_id)
+        if state is None:
+            return None
+        
+        success = dissolve_alliance(state, player_id, ally_player_id)
+        if not success:
+            raise ValueError("Could not dissolve alliance")
+        
+        await self._save_state_to_store(state)
+        await ws_manager.broadcast_state(room_id, state)
+        await ws_manager.broadcast_event(room_id, "alliance_dissolved", {
+            "player_a_id": player_id,
+            "player_b_id": ally_player_id
+        })
+        
+        return state
+
+    async def suggest_heading(self, room_id: str, from_player_id: str, ally_player_id: str, ship_id: str, target_pos: Dict[str, float]) -> Optional[GameState]:
+        state = await self.get_state(room_id)
+        if state is None:
+            return None
+        
+        success = suggest_heading(state, from_player_id, ally_player_id, ship_id, target_pos)
+        if not success:
+            raise ValueError("Could not suggest heading")
+        
+        await self._save_state_to_store(state)
+        await ws_manager.broadcast_state(room_id, state)
+        
+        await ws_manager.send_private(room_id, ally_player_id, {
+            "type": "heading_suggestion",
+            "data": {
+                "from_player_id": from_player_id,
+                "ship_id": ship_id,
+                "target_position": target_pos
+            }
+        })
         
         return state
 

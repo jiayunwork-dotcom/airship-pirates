@@ -7,7 +7,7 @@ from app.models.game_models import (
     Order, GasBalloon, ShipModule, CrewMember, Cargo, TradeGood, Position,
     AltitudeLevel, ModuleType, GasType, WeatherType, ActionType, BattlePhase,
     ShipStatus, CityType, CargoType, CrewRole, ModuleTarget,
-    BattleActionRecord, BattleReport
+    BattleActionRecord, BattleReport, Alliance, PendingInvite, WaypointPassRecord
 )
 from app.core.config import settings
 
@@ -408,13 +408,16 @@ def _resolve_single_movement(airship: Airship, order: Order, state: GameState) -
         for wp in state.waypoints:
             if _distance(airship.position, wp.position) < 20:
                 if wp.toll_player_id and wp.toll_player_id != airship.player_id:
-                    toll = wp.toll_amount
-                    payer = next((p for p in state.players if p.id == airship.player_id), None)
-                    receiver = next((p for p in state.players if p.id == wp.toll_player_id), None)
-                    if payer and receiver and payer.wealth >= toll:
-                        payer.wealth -= toll
-                        receiver.wealth += toll
-                        state.event_log.append(f"Ship {airship.name} paid toll of {toll} at waypoint {wp.id}")
+                    if _handle_waypoint_toll_for_ally(state, airship, wp):
+                        state.event_log.append(f"Ship {airship.name} passed through allied waypoint {wp.id} (no toll)")
+                    else:
+                        toll = wp.toll_amount
+                        payer = next((p for p in state.players if p.id == airship.player_id), None)
+                        receiver = next((p for p in state.players if p.id == wp.toll_player_id), None)
+                        if payer and receiver and payer.wealth >= toll:
+                            payer.wealth -= toll
+                            receiver.wealth += toll
+                            state.event_log.append(f"Ship {airship.name} paid toll of {toll} at waypoint {wp.id}")
     
     return airship
 
@@ -496,6 +499,18 @@ def resolve_movement(state: GameState) -> GameState:
     return state
 
 
+def _are_allies(state: GameState, player_a_id: str, player_b_id: str) -> bool:
+    if player_a_id == player_b_id:
+        return True
+    for alliance in state.alliances:
+        if not alliance.active:
+            continue
+        if (alliance.player_a_id == player_a_id and alliance.player_b_id == player_b_id) or \
+           (alliance.player_a_id == player_b_id and alliance.player_b_id == player_a_id):
+            return True
+    return False
+
+
 def resolve_encounters(state: GameState) -> GameState:
     active_airships = [a for a in state.airships if a.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]]
     
@@ -519,11 +534,16 @@ def resolve_encounters(state: GameState) -> GameState:
                         attacker_order = order
                         break
                 
+                are_allies_flag = _are_allies(state, ship_a.player_id, ship_b.player_id)
+                
+                if attacker_order and are_allies_flag:
+                    _handle_betrayal(state, ship_a.player_id, ship_b.player_id, f"{ship_a.name} attacked allied ship {ship_b.name}")
+                
                 if attacker_order or (dist < 25 and ship_a.player_id not in ship_b.in_battle_id if ship_b.in_battle_id else True):
                     player_a = next((p for p in state.players if p.id == ship_a.player_id), None)
                     player_b = next((p for p in state.players if p.id == ship_b.player_id), None)
                     
-                    if player_a and player_b and (player_a.id not in player_b.alliances):
+                    if player_a and player_b and not _are_allies(state, player_a.id, player_b.id):
                         battle = Battle(
                             id=f"battle_{_generate_id()}",
                             ship_a_id=ship_a.id,
@@ -546,6 +566,274 @@ def resolve_encounters(state: GameState) -> GameState:
                             battle.log.append(f"{ship_a.name} initiates boarding!")
                         
                         state.event_log.append(f"Battle engaged: {ship_a.name} vs {ship_b.name}")
+    
+    return state
+
+
+def _handle_betrayal(state: GameState, betrayer_id: str, victim_id: str, reason: str) -> None:
+    alliance = None
+    for a in state.alliances:
+        if a.active and (
+            (a.player_a_id == betrayer_id and a.player_b_id == victim_id) or
+            (a.player_a_id == victim_id and a.player_b_id == betrayer_id)
+        ):
+            alliance = a
+            break
+    
+    if not alliance:
+        return
+    
+    alliance.active = False
+    
+    betrayer = next((p for p in state.players if p.id == betrayer_id), None)
+    victim = next((p for p in state.players if p.id == victim_id), None)
+    
+    if betrayer:
+        betrayer.alliances = [aid for aid in betrayer.alliances if aid != victim_id]
+        betrayer.traitor_debuff_turns = 3
+        betrayer.reputation = max(0, betrayer.reputation - 20)
+        for city_id in betrayer.city_reputations:
+            betrayer.city_reputations[city_id] = max(0, betrayer.city_reputations[city_id] - 20)
+    
+    if victim:
+        victim.alliances = [aid for aid in victim.alliances if aid != betrayer_id]
+        victim.traitor_debuff_turns = 3
+        victim.reputation = max(0, victim.reputation - 10)
+        for city_id in victim.city_reputations:
+            victim.city_reputations[city_id] = max(0, victim.city_reputations[city_id] - 10)
+    
+    state.event_log.append(f"💔 BETRAYAL: {reason}")
+    state.event_log.append(f"Alliance between {betrayer.name if betrayer else betrayer_id} and {victim.name if victim else victim_id} dissolved!")
+    state.event_log.append(f"Both players gain 'Traitor' debuff for 3 turns.")
+
+
+def _update_alliance_trust(state: GameState) -> None:
+    for alliance in state.alliances:
+        if not alliance.active:
+            continue
+        
+        alliance.turns_without_betrayal += 1
+        
+        if alliance.turns_without_betrayal >= 3 and alliance.trust_level < 3:
+            new_level = min(3, alliance.trust_level + 1)
+            if new_level > alliance.trust_level:
+                alliance.trust_level = new_level
+                alliance.turns_without_betrayal = 0
+                
+                player_a = next((p for p in state.players if p.id == alliance.player_a_id), None)
+                player_b = next((p for p in state.players if p.id == alliance.player_b_id), None)
+                
+                level_names = {1: "Basic", 2: "Trade Pact", 3: "Joint Command"}
+                state.event_log.append(
+                    f"🤝 Alliance trust level increased to {new_level} ({level_names.get(new_level, '')}) "
+                    f"between {player_a.name if player_a else alliance.player_a_id} and "
+                    f"{player_b.name if player_b else alliance.player_b_id}"
+                )
+
+
+def _update_traitor_debuffs(state: GameState) -> None:
+    for player in state.players:
+        if player.traitor_debuff_turns > 0:
+            player.traitor_debuff_turns -= 1
+            if player.traitor_debuff_turns == 0:
+                state.event_log.append(f"ℹ️ {player.name}'s Traitor debuff has expired.")
+
+
+def create_alliance_invite(state: GameState, from_player_id: str, to_player_id: str) -> Optional[PendingInvite]:
+    from_player = next((p for p in state.players if p.id == from_player_id), None)
+    to_player = next((p for p in state.players if p.id == to_player_id), None)
+    
+    if not from_player or not to_player:
+        return None
+    
+    if _are_allies(state, from_player_id, to_player_id):
+        return None
+    
+    existing = next(
+        (inv for inv in state.pending_invites 
+         if inv.from_player_id == from_player_id and inv.to_player_id == to_player_id),
+        None
+    )
+    if existing:
+        return None
+    
+    reverse_existing = next(
+        (inv for inv in state.pending_invites 
+         if inv.from_player_id == to_player_id and inv.to_player_id == from_player_id),
+        None
+    )
+    if reverse_existing:
+        return _accept_invite(state, reverse_existing.id, to_player_id)
+    
+    invite = PendingInvite(
+        id=f"invite_{_generate_id()}",
+        from_player_id=from_player_id,
+        from_player_name=from_player.name,
+        to_player_id=to_player_id,
+        created_at_turn=state.turn
+    )
+    state.pending_invites.append(invite)
+    state.event_log.append(f"📨 {from_player.name} sent an alliance invite to {to_player.name}")
+    
+    return invite
+
+
+def _accept_invite(state: GameState, invite_id: str, player_id: str) -> Optional[PendingInvite]:
+    invite = next((inv for inv in state.pending_invites if inv.id == invite_id), None)
+    if not invite or invite.to_player_id != player_id:
+        return None
+    
+    from_player = next((p for p in state.players if p.id == invite.from_player_id), None)
+    to_player = next((p for p in state.players if p.id == invite.to_player_id), None)
+    
+    if not from_player or not to_player:
+        return None
+    
+    state.pending_invites = [inv for inv in state.pending_invites if inv.id != invite_id]
+    
+    alliance = Alliance(
+        id=f"alliance_{_generate_id()}",
+        player_a_id=invite.from_player_id,
+        player_b_id=invite.to_player_id,
+        trust_level=1,
+        turns_without_betrayal=0,
+        created_at_turn=state.turn,
+        active=True
+    )
+    state.alliances.append(alliance)
+    
+    from_player.alliances.append(invite.to_player_id)
+    to_player.alliances.append(invite.from_player_id)
+    
+    state.event_log.append(f"🤝 Alliance formed between {from_player.name} and {to_player.name}!")
+    
+    return invite
+
+
+def respond_to_invite(state: GameState, invite_id: str, player_id: str, accept: bool) -> bool:
+    if accept:
+        result = _accept_invite(state, invite_id, player_id)
+        return result is not None
+    else:
+        invite = next((inv for inv in state.pending_invites if inv.id == invite_id), None)
+        if not invite or invite.to_player_id != player_id:
+            return False
+        state.pending_invites = [inv for inv in state.pending_invites if inv.id != invite_id]
+        state.event_log.append(f"❌ Alliance invite from {invite.from_player_name} was rejected")
+        return True
+
+
+def dissolve_alliance(state: GameState, player_id: str, ally_player_id: str) -> bool:
+    alliance = None
+    for a in state.alliances:
+        if a.active and (
+            (a.player_a_id == player_id and a.player_b_id == ally_player_id) or
+            (a.player_a_id == ally_player_id and a.player_b_id == player_id)
+        ):
+            alliance = a
+            break
+    
+    if not alliance:
+        return False
+    
+    alliance.active = False
+    
+    player = next((p for p in state.players if p.id == player_id), None)
+    ally = next((p for p in state.players if p.id == ally_player_id), None)
+    
+    if player:
+        player.alliances = [aid for aid in player.alliances if aid != ally_player_id]
+    if ally:
+        ally.alliances = [aid for aid in ally.alliances if aid != player_id]
+    
+    state.event_log.append(f"📜 Alliance between {player.name if player else player_id} and {ally.name if ally else ally_player_id} dissolved by mutual agreement.")
+    
+    return True
+
+
+def get_alliance(state: GameState, player_a_id: str, player_b_id: str) -> Optional[Alliance]:
+    for alliance in state.alliances:
+        if alliance.active and (
+            (alliance.player_a_id == player_a_id and alliance.player_b_id == player_b_id) or
+            (alliance.player_a_id == player_b_id and alliance.player_b_id == player_a_id)
+        ):
+            return alliance
+    return None
+
+
+def get_ally_visible_ships(state: GameState, player_id: str) -> List[Airship]:
+    visible = []
+    for alliance in state.alliances:
+        if not alliance.active:
+            continue
+        if alliance.trust_level < 1:
+            continue
+        
+        ally_id = alliance.player_b_id if alliance.player_a_id == player_id else alliance.player_a_id
+        
+        for ship in state.airships:
+            if ship.player_id == ally_id and ship.status != ShipStatus.DESTROYED:
+                visible.append(ship)
+    
+    return visible
+
+
+def suggest_heading(state: GameState, from_player_id: str, to_player_id: str, ship_id: str, target_pos: Dict[str, float]) -> bool:
+    alliance = get_alliance(state, from_player_id, to_player_id)
+    if not alliance or alliance.trust_level < 3:
+        return False
+    
+    target_player = next((p for p in state.players if p.id == to_player_id), None)
+    if not target_player:
+        return False
+    
+    target_ship = next((a for a in state.airships if a.id == ship_id and a.player_id == to_player_id), None)
+    if not target_ship:
+        return False
+    
+    from_player = next((p for p in state.players if p.id == from_player_id), None)
+    
+    target_player.suggested_headings[ship_id] = {
+        "from_player_id": from_player_id,
+        "from_player_name": from_player.name if from_player else "Unknown",
+        "target_position": target_pos,
+        "turn": state.turn
+    }
+    
+    state.event_log.append(f"🧭 {from_player.name if from_player else from_player_id} suggested a heading to {target_player.name} for {target_ship.name}")
+    
+    return True
+
+
+def _handle_waypoint_toll_for_ally(state: GameState, airship: Airship, wp: Waypoint) -> bool:
+    if not wp.toll_player_id or wp.toll_player_id == airship.player_id:
+        return False
+    
+    if _are_allies(state, airship.player_id, wp.toll_player_id):
+        alliance = get_alliance(state, airship.player_id, wp.toll_player_id)
+        if alliance and alliance.trust_level >= 2:
+            record = WaypointPassRecord(
+                waypoint_id=wp.id,
+                passing_player_id=airship.player_id,
+                passing_ship_name=airship.name,
+                turn=state.turn
+            )
+            state.waypoint_pass_records.append(record)
+            if len(state.waypoint_pass_records) > 50:
+                state.waypoint_pass_records = state.waypoint_pass_records[-50:]
+            return True
+    
+    return False
+
+
+def resolve_alliances_turn(state: GameState) -> GameState:
+    _update_alliance_trust(state)
+    _update_traitor_debuffs(state)
+    
+    state.pending_invites = [
+        inv for inv in state.pending_invites
+        if state.turn - inv.created_at_turn < 5
+    ]
     
     return state
 
@@ -1558,6 +1846,7 @@ def process_turn(state: GameState) -> GameState:
     resolve_trade(state)
     resolve_weather(state)
     resolve_events(state)
+    resolve_alliances_turn(state)
     
     state.scores = calculate_scores(state)
     

@@ -3,7 +3,9 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, De
 from app.models.game_models import (
     GameState, Order, BattleAction,
     RoomCreateRequest, JoinRoomRequest,
-    OrdersSubmitRequest, BattleActionsSubmitRequest
+    OrdersSubmitRequest, BattleActionsSubmitRequest,
+    InviteAllianceRequest, RespondInviteRequest,
+    DissolveAllianceRequest, SuggestHeadingRequest
 )
 from app.services.room_manager import room_manager
 from app.services.websocket_manager import ws_manager
@@ -177,6 +179,101 @@ async def get_config():
         "weather_change_interval": settings.weather_change_interval,
         "weather_forecast_turns": settings.weather_forecast_turns,
     }
+
+
+@router.post("/rooms/{room_id}/alliance/invite", response_model=GameState)
+async def invite_alliance(room_id: str, request: InviteAllianceRequest):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    player = next((p for p in state.players if p.id == request.player_id), None)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    target = next((p for p in state.players if p.id == request.target_player_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target player not found")
+    
+    try:
+        state = await room_manager.invite_alliance(
+            room_id,
+            request.player_id,
+            request.target_player_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return state
+
+
+@router.post("/rooms/{room_id}/alliance/respond", response_model=GameState)
+async def respond_invite(room_id: str, request: RespondInviteRequest):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    player = next((p for p in state.players if p.id == request.player_id), None)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    try:
+        state = await room_manager.respond_invite(
+            room_id,
+            request.player_id,
+            request.invite_id,
+            request.accept
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return state
+
+
+@router.post("/rooms/{room_id}/alliance/dissolve", response_model=GameState)
+async def dissolve_alliance_endpoint(room_id: str, request: DissolveAllianceRequest):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    player = next((p for p in state.players if p.id == request.player_id), None)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    try:
+        state = await room_manager.dissolve_alliance(
+            room_id,
+            request.player_id,
+            request.ally_player_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return state
+
+
+@router.post("/rooms/{room_id}/alliance/suggest_heading", response_model=GameState)
+async def suggest_heading_endpoint(room_id: str, request: SuggestHeadingRequest):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    player = next((p for p in state.players if p.id == request.player_id), None)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    try:
+        state = await room_manager.suggest_heading(
+            room_id,
+            request.player_id,
+            request.ally_player_id,
+            request.ship_id,
+            request.target_position
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return state
 
 
 @router.websocket("/ws/{room_id}/{player_id}")

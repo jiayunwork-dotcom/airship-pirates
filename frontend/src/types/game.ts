@@ -160,6 +160,8 @@ export interface Player {
   ready: boolean;
   color: string;
   score: number;
+  traitor_debuff_turns: number;
+  suggested_headings: Record<string, any>;
 }
 
 export interface Airship {
@@ -259,6 +261,31 @@ export interface BattleReport {
   turn_number: number;
 }
 
+export interface Alliance {
+  id: string;
+  player_a_id: string;
+  player_b_id: string;
+  trust_level: number;
+  turns_without_betrayal: number;
+  created_at_turn: number;
+  active: boolean;
+}
+
+export interface PendingInvite {
+  id: string;
+  from_player_id: string;
+  from_player_name: string;
+  to_player_id: string;
+  created_at_turn: number;
+}
+
+export interface WaypointPassRecord {
+  waypoint_id: string;
+  passing_player_id: string;
+  passing_ship_name: string;
+  turn: number;
+}
+
 export interface BattleAction {
   type: ActionType;
   target_module?: ModuleTarget | null;
@@ -309,6 +336,9 @@ export interface GameState {
   scores: Record<string, number>;
   event_log: string[];
   battle_reports: BattleReport[];
+  alliances: Alliance[];
+  pending_invites: PendingInvite[];
+  waypoint_pass_records: WaypointPassRecord[];
   created_at: string;
 }
 
