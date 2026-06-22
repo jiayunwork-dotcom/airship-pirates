@@ -1,5 +1,5 @@
 import { For, Show, createSignal, createMemo } from 'solid-js';
-import type { Airship, ShipModule, GasType, AltitudeLevel, CrewMember, CargoItem, ModuleType, CrewRole } from '../types/game';
+import type { Airship, ShipModule, GasType, AltitudeLevel, CrewMember, CargoItem, ModuleType, CrewRole, CargoType } from '../types/game';
 import type { Component } from 'solid-js';
 import { useGameStore } from '../store/gameStore';
 
@@ -9,6 +9,17 @@ interface AirshipPanelProps {
   onClose?: () => void;
   onModify?: () => void;
 }
+
+const CARGO_TYPE_NAMES: Record<CargoType, string> = {
+  food: '食物',
+  fuel: '燃料',
+  metals: '金属',
+  textiles: '纺织品',
+  gems: '宝石',
+  weapons: '武器',
+  luxuries: '奢侈品',
+  medicine: '药品',
+};
 
 const MODULE_ICONS: Record<ModuleType, string> = {
   cockpit: '🎯',
@@ -165,12 +176,13 @@ const CrewCard: Component<{ crew: CrewMember }> = (props) => {
 
 const CargoItemCard: Component<{ cargo: CargoItem }> = (props) => {
   const totalValue = props.cargo.amount * props.cargo.base_value;
+  const typeName = CARGO_TYPE_NAMES[props.cargo.type] || props.cargo.type;
   return (
     <div class="flex items-center justify-between p-2 bg-stone-800/50 rounded border border-brass/30">
       <div class="flex items-center gap-2">
         <span class="text-lg">📦</span>
         <div>
-          <div class="text-sm font-semibold text-amber-200">{props.cargo.type}</div>
+          <div class="text-sm font-semibold text-amber-200">{typeName}</div>
           <div class="text-[10px] text-amber-200/60">
             单价: {props.cargo.base_value} 金币
           </div>
@@ -190,14 +202,14 @@ const AirshipPanel: Component<AirshipPanelProps> = (props) => {
   const player = () => useGameStore().currentPlayer;
   const isOwnAirship = () => props.airship.player_id === player()?.id;
 
-  const crewList = createMemo(() => Object.values(props.airship.crew));
+  const crewList = createMemo(() => Object.values(props.airship.crew || {}));
 
   const currentCargoWeight = createMemo(() => {
-    return props.airship.cargo.reduce((sum, c) => sum + c.amount, 0);
+    return (props.airship.cargo || []).reduce((sum, c) => sum + c.amount, 0);
   });
 
   const maxCargoWeight = createMemo(() => {
-    return props.airship.modules
+    return (props.airship.modules || [])
       .filter((m) => m.module_type === 'cargo')
       .reduce((sum, m) => sum + (m.cargo_capacity || 0), 0);
   });
@@ -373,15 +385,17 @@ const AirshipPanel: Component<AirshipPanelProps> = (props) => {
               </span>
             </div>
             <Show
-              when={props.airship.cargo.length > 0}
+              when={(props.airship.cargo?.length || 0) > 0}
               fallback={
                 <div class="text-center text-amber-200/50 py-6 text-sm">
-                  货舱空空如也
+                  <div class="text-4xl mb-2 opacity-40">📦</div>
+                  <div>货舱空空如也</div>
+                  <div class="text-xs mt-1 opacity-60">前往城市进行贸易可装载货物</div>
                 </div>
               }
             >
               <div class="space-y-2">
-                <For each={props.airship.cargo}>
+                <For each={props.airship.cargo || []}>
                   {(c) => <CargoItemCard cargo={c} />}
                 </For>
               </div>

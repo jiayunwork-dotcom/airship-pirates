@@ -40,8 +40,25 @@ export type GameStore = GameStoreState & GameStoreActions;
 
 const GameContext = createContext<GameStore>();
 
-const API_BASE_URL = 'http://localhost:8000/api';
-const WS_BASE_URL = 'ws://localhost:8000/api/ws';
+const getApiBaseUrl = () => {
+  const host = window.location.host;
+  if (host.includes('localhost:3000') || host.includes('127.0.0.1:3000')) {
+    return 'http://localhost:8000/api';
+  }
+  return '/api';
+};
+
+const getWsBaseUrl = () => {
+  const host = window.location.host;
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (host.includes('localhost:3000') || host.includes('127.0.0.1:3000')) {
+    return 'ws://localhost:8000/api/ws';
+  }
+  return `${proto}//${host}/api/ws`;
+};
+
+const API_BASE_URL = getApiBaseUrl();
+const WS_BASE_URL = getWsBaseUrl();
 
 const PLAYER_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c'];
 

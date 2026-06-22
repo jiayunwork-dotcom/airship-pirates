@@ -62,7 +62,10 @@ const GameUI: Component = () => {
   });
 
   const currentAirship = createMemo(() => {
-    if (!store.selectedAirshipId || !store.gameState) return null;
+    if (!store.selectedAirshipId || !store.gameState) {
+      if (!store.currentPlayer || !store.gameState) return null;
+      return store.gameState.airships.find((a: Airship) => a.player_id === store.currentPlayer!.id) || null;
+    }
     return store.gameState.airships.find((a: Airship) => a.id === store.selectedAirshipId) || null;
   });
 
@@ -72,18 +75,15 @@ const GameUI: Component = () => {
   });
 
   const isCityPanelOpen = createMemo(() => {
-    const city = currentCity();
-    const airship = currentAirship();
-    if (!city || !airship) return false;
-    return Math.abs(airship.position.x - city.position.x) < 30 && Math.abs(airship.position.y - city.position.y) < 30;
+    return !!currentCity();
   });
 
   return (
     <>
-      <Show when={isCityPanelOpen() && currentCity() && currentAirship() && store.currentPlayer}>
+      <Show when={isCityPanelOpen() && currentCity() && store.currentPlayer}>
         <CityPanel
           city={currentCity()!}
-          airship={currentAirship()!}
+          airship={currentAirship()}
           playerId={store.currentPlayer!.id}
           onClose={() => store.setSelectedCity(null)}
         />

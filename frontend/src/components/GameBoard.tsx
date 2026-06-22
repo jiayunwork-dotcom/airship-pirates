@@ -28,10 +28,23 @@ const ALTITUDE_COLORS: Record<AltitudeLevel, string> = {
   extreme: '#ef4444',
 };
 
+const WORLD_MAX = 1000;
+
+function worldToGrid(wx: number, wy: number): { col: number; row: number } {
+  const col = Math.max(0, Math.min(MAP_WIDTH - 1, Math.floor((wx / WORLD_MAX) * MAP_WIDTH)));
+  const row = Math.max(0, Math.min(MAP_HEIGHT - 1, Math.floor((wy / WORLD_MAX) * MAP_HEIGHT)));
+  return { col, row };
+}
+
 function hexToPixel(col: number, row: number): { x: number; y: number } {
   const x = HEX_WIDTH * 0.75 * col;
   const y = HEX_HEIGHT * (row + (col % 2 ? 0.5 : 0));
   return { x: x + HEX_SIZE + 10, y: y + HEX_SIZE + 10 };
+}
+
+function worldToPixel(wx: number, wy: number): { x: number; y: number } {
+  const { col, row } = worldToGrid(wx, wy);
+  return hexToPixel(col, row);
 }
 
 function hexCorners(cx: number, cy: number, size: number): string {
@@ -119,6 +132,11 @@ const PlayerSidebar: Component<{ onLeaveHome: () => void }> = (props) => {
     return store.gameState.airships.filter((a) => a.player_id === player.id);
   });
 
+  const allPlayers = createMemo(() => {
+    if (!store.gameState) return [];
+    return store.gameState.players;
+  });
+
   if (!player) return null;
 
   return (
@@ -160,6 +178,33 @@ const PlayerSidebar: Component<{ onLeaveHome: () => void }> = (props) => {
           <span class="text-sky-300 font-bold font-mono">
             {playerAirships().length}
           </span>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <div class="text-xs text-amber-300 font-bold mb-2 border-b border-brass/40 pb-1">
+          🎮 所有玩家 ({allPlayers().length})
+        </div>
+        <div class="space-y-1">
+          <For each={allPlayers()}>
+            {(p) => (
+              <div class="flex items-center justify-between p-2 bg-stone-800/50 rounded border border-brass/20 text-xs">
+                <div class="flex items-center gap-2">
+                  <span
+                    class="w-5 h-5 rounded-full border border-white/30 shrink-0"
+                    style={{ background: p.color }}
+                  />
+                  <span class={`${p.id === player.id ? 'text-amber-200 font-bold' : 'text-amber-200/80'} truncate`}>
+                    {p.name}
+                    {p.id === player.id && <span class="ml-1 text-amber-400/70">(你)</span>}
+                  </span>
+                </div>
+                <span class="text-amber-300/80 font-mono text-[10px]">
+                  💰{p.wealth}
+                </span>
+              </div>
+            )}
+          </For>
         </div>
       </div>
 
@@ -457,8 +502,14 @@ const GameMap: Component = () => {
   const handleTileClick = (col: number, row: number) => {
     if (!store.gameState) return;
 
+    const gridXMin = (col / MAP_WIDTH) * WORLD_MAX;
+    const gridXMax = ((col + 1) / MAP_WIDTH) * WORLD_MAX;
+    const gridYMin = (row / MAP_HEIGHT) * WORLD_MAX;
+    const gridYMax = ((row + 1) / MAP_HEIGHT) * WORLD_MAX;
+
     const clickedCity = store.gameState.cities.find(
-      (c) => c.position.x === col && c.position.y === row
+      (c) => c.position.x >= gridXMin && c.position.x < gridXMax &&
+             c.position.y >= gridYMin && c.position.y < gridYMax
     );
     if (clickedCity) {
       store.setSelectedCity(clickedCity.id);
@@ -466,7 +517,8 @@ const GameMap: Component = () => {
     }
 
     const clickedAirship = store.gameState.airships.find(
-      (a) => a.position.x === col && a.position.y === row
+      (a) => a.position.x >= gridXMin && a.position.x < gridXMax &&
+             a.position.y >= gridYMin && a.position.y < gridYMax
     );
     if (clickedAirship) {
       store.setSelectedAirship(clickedAirship.id);
@@ -527,7 +579,7 @@ const GameMap: Component = () => {
         <Show when={store.gameState}>
           <For each={store.gameState!.weather}>
             {(w) => {
-              const { x, y } = hexToPixel(w.position.x, w.position.y);
+              const { x, y } = worldToPixel(w.position.x, w.position.y);
               const radiusPx = w.radius * HEX_WIDTH * 0.75;
               return (
                 <g>
@@ -559,7 +611,7 @@ const GameMap: Component = () => {
 
           <For each={store.gameState!.waypoints}>
             {(wp: Waypoint) => {
-              const { x, y } = hexToPixel(wp.position.x, wp.position.y);
+              const { x, y } = worldToPixel(wp.position.x, wp.position.y);
               return (
                 <g>
                   <circle cx={x} cy={y} r={HEX_SIZE * 0.25} fill={wp.toll_player_id ? '#854d0e' : '#44403c'} stroke="#d6d3d1" stroke-width={2} />
@@ -573,11 +625,11 @@ const GameMap: Component = () => {
 
           <For each={store.gameState!.cities}>
             {(city: City) => {
-              const { x, y } = hexToPixel(city.position.x, city.position.y);
+              const { x, y } = worldToPixel(city.position.x, city.position.y);
               const isSelected = store.selectedCityId === city.id;
               return (
                 <g
-                  onClick={() => handleTileClick(city.position.x, city.position.y)}
+                  onClick={() => store.setSelectedCity(city.id)}
                   style={{ cursor: 'pointer' }}
                 >
                   <circle cx={x} cy={y} r={HEX_SIZE * 0.85} fill="url(#cityGlow)" />
@@ -615,7 +667,7 @@ const GameMap: Component = () => {
 
           <For each={store.gameState!.airships}>
             {(airship: Airship) => {
-              const { x, y } = hexToPixel(airship.position.x, airship.position.y);
+              const { x, y } = worldToPixel(airship.position.x, airship.position.y);
               const player = store.gameState!.players.find((p) => p.id === airship.player_id);
               const isSelected = store.selectedAirshipId === airship.id;
               const altitudeOffset =
@@ -624,7 +676,7 @@ const GameMap: Component = () => {
                 airship.altitude === AltitudeLevel.HIGH ? -8 : -12;
               return (
                 <g
-                  onClick={() => handleTileClick(airship.position.x, airship.position.y)}
+                  onClick={() => store.setSelectedAirship(airship.id)}
                   style={{ cursor: 'pointer' }}
                   class="transition-transform"
                 >

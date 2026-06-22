@@ -5,7 +5,7 @@ import { useGameStore } from '../store/gameStore';
 
 interface CityPanelProps {
   city: City;
-  airship: Airship;
+  airship: Airship | undefined | null;
   playerId: string;
   onClose: () => void;
 }
@@ -71,20 +71,23 @@ const CityPanel: Component<CityPanelProps> = (props) => {
 
   const currentCargoMap = createMemo(() => {
     const map: Record<string, number> = {};
-    for (const c of props.airship.cargo) {
+    if (!props.airship) return map;
+    for (const c of props.airship.cargo || []) {
       map[c.type] = (map[c.type] || 0) + c.amount;
     }
     return map;
   });
 
   const maxCargoWeight = createMemo(() => {
-    return props.airship.modules
+    if (!props.airship) return 0;
+    return (props.airship.modules || [])
       .filter((m) => m.module_type === 'cargo')
       .reduce((sum, m) => sum + (m.cargo_capacity || 0), 0);
   });
 
   const currentCargoWeight = createMemo(() => {
-    return props.airship.cargo.reduce((sum, c) => sum + c.amount, 0);
+    if (!props.airship) return 0;
+    return (props.airship.cargo || []).reduce((sum, c) => sum + c.amount, 0);
   });
 
   const remainingCargoSpace = createMemo(() => {
@@ -124,7 +127,7 @@ const CityPanel: Component<CityPanelProps> = (props) => {
   });
 
   const repairCostPerPoint = 10;
-  const maxRepair = props.airship.max_hp - props.airship.hp;
+  const maxRepair = props.airship ? props.airship.max_hp - props.airship.hp : 0;
   const repairCost = repairAmount() * repairCostPerPoint;
 
   const handleTrade = async () => {
@@ -166,7 +169,7 @@ const CityPanel: Component<CityPanelProps> = (props) => {
     }
   };
 
-  const repairHpPercent = (props.airship.hp / props.airship.max_hp) * 100;
+  const repairHpPercent = props.airship ? (props.airship.hp / props.airship.max_hp) * 100 : 100;
 
   return (
     <div class="modal-overlay">
@@ -228,14 +231,25 @@ const CityPanel: Component<CityPanelProps> = (props) => {
         <div class="flex-1 overflow-y-auto scrollbar-steampunk p-5">
           <Show when={activeTab() === 'trade'}>
             <div class="space-y-4">
-              <div class="flex items-center justify-between">
-                <h3 class="text-lg font-bold text-amber-300 flex items-center gap-2">
-                  📦 商品清单
-                </h3>
-                <div class="text-sm text-amber-200/70">
-                  货舱剩余: <span class="font-bold text-amber-300">{remainingCargoSpace()}</span> / {maxCargoWeight()}
+              <Show when={!props.airship} fallback={
+                <>
+                  <div class="flex items-center justify-between">
+                    <h3 class="text-lg font-bold text-amber-300 flex items-center gap-2">
+                      📦 商品清单
+                    </h3>
+                    <div class="text-sm text-amber-200/70">
+                      货舱剩余: <span class="font-bold text-amber-300">{remainingCargoSpace()}</span> / {maxCargoWeight()}
+                    </div>
+                  </div>
+                </>
+              }>
+                <div class="steampunk-panel p-6 text-center">
+                  <div class="text-4xl mb-3 opacity-40">🚁</div>
+                  <div class="text-amber-200 text-lg mb-2">请先选择一艘飞艇</div>
+                  <div class="text-amber-200/60 text-sm">点击左侧列表或地图上的飞艇选中后，再来城市进行贸易</div>
                 </div>
-              </div>
+              </Show>
+              <Show when={props.airship}>
 
               <div class="space-y-2">
                 <For each={props.city.trade_goods}>
@@ -350,6 +364,7 @@ const CityPanel: Component<CityPanelProps> = (props) => {
                   </button>
                 </div>
               </div>
+              </Show>
             </div>
           </Show>
 
@@ -359,88 +374,98 @@ const CityPanel: Component<CityPanelProps> = (props) => {
                 🔧 飞艇维修
               </h3>
 
-              <div class="p-4 bg-stone-800/60 rounded-lg border border-brass/40">
-                <div class="flex items-center justify-between mb-3">
-                  <span class="text-amber-200 font-bold">{props.airship.name}</span>
-                  <span class="font-mono text-amber-300">
-                    {props.airship.hp} / {props.airship.max_hp} HP
-                  </span>
-                </div>
-                <div class="h-6 bg-stone-700 rounded-full overflow-hidden">
-                  <div
-                    class={`h-full transition-all duration-300 ${repairHpPercent > 50 ? 'bg-green-500' : repairHpPercent > 25 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                    style={{ width: `${repairHpPercent}%` }}
-                  />
-                </div>
-                <div class="mt-2 text-xs text-amber-200/60">
-                  损坏程度: {repairHpPercent < 25 ? '严重损坏' : repairHpPercent < 50 ? '中度损坏' : repairHpPercent < 75 ? '轻微损坏' : '状态良好'}
-                </div>
-              </div>
-
-              <Show when={maxRepair > 0}>
-                <div class="p-4 bg-stone-800/60 rounded-lg border border-brass/40">
-                  <div class="flex items-center justify-between mb-3">
-                    <div class="text-amber-200/80">
-                      维修数量: <span class="font-bold text-xl text-amber-300 font-mono">{repairAmount()}</span> HP
-                    </div>
-                    <div class="text-xs text-amber-200/60">
-                      (每HP {repairCostPerPoint}💰)
-                    </div>
-                  </div>
-
-                  <div class="flex items-center gap-3 mb-3">
-                    <button
-                      onClick={() => setRepairAmount(Math.max(1, repairAmount() - 10))}
-                      class="steampunk-button py-1 px-3 text-sm"
-                    >
-                      -10
-                    </button>
-                    <input
-                      type="range"
-                      min={1}
-                      max={maxRepair}
-                      value={repairAmount()}
-                      onInput={(e) => setRepairAmount(Number(e.currentTarget.value))}
-                      class="flex-1 accent-amber-500"
-                    />
-                    <button
-                      onClick={() => setRepairAmount(Math.min(maxRepair, repairAmount() + 10))}
-                      class="steampunk-button py-1 px-3 text-sm"
-                    >
-                      +10
-                    </button>
-                  </div>
-
-                  <div class="flex gap-2 mb-4">
-                    <button onClick={() => setRepairAmount(Math.max(1, Math.floor(maxRepair * 0.25)))} class="steampunk-button py-1 text-xs flex-1">25%</button>
-                    <button onClick={() => setRepairAmount(Math.max(1, Math.floor(maxRepair * 0.5)))} class="steampunk-button py-1 text-xs flex-1">50%</button>
-                    <button onClick={() => setRepairAmount(Math.max(1, Math.floor(maxRepair * 0.75)))} class="steampunk-button py-1 text-xs flex-1">75%</button>
-                    <button onClick={() => setRepairAmount(maxRepair)} class="steampunk-button py-1 text-xs flex-1">全部</button>
-                  </div>
-
-                  <div class="flex items-center justify-between p-3 bg-stone-900/60 rounded-lg border border-brass/30">
-                    <div>
-                      <div class="text-sm text-amber-200/70">维修费用</div>
-                      <div class="text-xl font-bold text-red-400 font-mono">
-                        -{repairCost.toLocaleString()}💰
-                      </div>
-                    </div>
-                    <button
-                      onClick={handleRepair}
-                      disabled={processing() || (store.currentPlayer?.wealth || 0) < repairCost}
-                      class="steampunk-button text-lg bg-gradient-to-b from-green-600 to-green-700 border-green-500 hover:from-green-500 hover:to-green-600"
-                    >
-                      {processing() ? '维修中...' : '🔧 立即维修'}
-                    </button>
-                  </div>
+              <Show when={!props.airship}>
+                <div class="steampunk-panel p-6 text-center">
+                  <div class="text-4xl mb-3 opacity-40">🚁</div>
+                  <div class="text-amber-200 text-lg mb-2">请先选择一艘飞艇</div>
+                  <div class="text-amber-200/60 text-sm">点击左侧列表或地图上的飞艇选中后，再来城市进行维修</div>
                 </div>
               </Show>
 
-              <Show when={maxRepair === 0}>
-                <div class="text-center p-8 text-green-400">
-                  <div class="text-5xl mb-3">✨</div>
-                  <div class="text-xl font-bold">飞艇状态完美，无需维修！</div>
+              <Show when={props.airship}>
+                <div class="p-4 bg-stone-800/60 rounded-lg border border-brass/40">
+                  <div class="flex items-center justify-between mb-3">
+                    <span class="text-amber-200 font-bold">{props.airship!.name}</span>
+                    <span class="font-mono text-amber-300">
+                      {props.airship!.hp} / {props.airship!.max_hp} HP
+                    </span>
+                  </div>
+                  <div class="h-6 bg-stone-700 rounded-full overflow-hidden">
+                    <div
+                      class={`h-full transition-all duration-300 ${repairHpPercent > 50 ? 'bg-green-500' : repairHpPercent > 25 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                      style={{ width: `${repairHpPercent}%` }}
+                    />
+                  </div>
+                  <div class="mt-2 text-xs text-amber-200/60">
+                    损坏程度: {repairHpPercent < 25 ? '严重损坏' : repairHpPercent < 50 ? '中度损坏' : repairHpPercent < 75 ? '轻微损坏' : '状态良好'}
+                  </div>
                 </div>
+
+                <Show when={maxRepair > 0}>
+                  <div class="p-4 bg-stone-800/60 rounded-lg border border-brass/40">
+                    <div class="flex items-center justify-between mb-3">
+                      <div class="text-amber-200/80">
+                        维修数量: <span class="font-bold text-xl text-amber-300 font-mono">{repairAmount()}</span> HP
+                      </div>
+                      <div class="text-xs text-amber-200/60">
+                        (每HP {repairCostPerPoint}💰)
+                      </div>
+                    </div>
+
+                    <div class="flex items-center gap-3 mb-3">
+                      <button
+                        onClick={() => setRepairAmount(Math.max(1, repairAmount() - 10))}
+                        class="steampunk-button py-1 px-3 text-sm"
+                      >
+                        -10
+                      </button>
+                      <input
+                        type="range"
+                        min={1}
+                        max={maxRepair}
+                        value={repairAmount()}
+                        onInput={(e) => setRepairAmount(Number(e.currentTarget.value))}
+                        class="flex-1 accent-amber-500"
+                      />
+                      <button
+                        onClick={() => setRepairAmount(Math.min(maxRepair, repairAmount() + 10))}
+                        class="steampunk-button py-1 px-3 text-sm"
+                      >
+                        +10
+                      </button>
+                    </div>
+
+                    <div class="flex gap-2 mb-4">
+                      <button onClick={() => setRepairAmount(Math.max(1, Math.floor(maxRepair * 0.25)))} class="steampunk-button py-1 text-xs flex-1">25%</button>
+                      <button onClick={() => setRepairAmount(Math.max(1, Math.floor(maxRepair * 0.5)))} class="steampunk-button py-1 text-xs flex-1">50%</button>
+                      <button onClick={() => setRepairAmount(Math.max(1, Math.floor(maxRepair * 0.75)))} class="steampunk-button py-1 text-xs flex-1">75%</button>
+                      <button onClick={() => setRepairAmount(maxRepair)} class="steampunk-button py-1 text-xs flex-1">全部</button>
+                    </div>
+
+                    <div class="flex items-center justify-between p-3 bg-stone-900/60 rounded-lg border border-brass/30">
+                      <div>
+                        <div class="text-sm text-amber-200/70">维修费用</div>
+                        <div class="text-xl font-bold text-red-400 font-mono">
+                          -{repairCost.toLocaleString()}💰
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleRepair}
+                        disabled={processing() || (store.currentPlayer?.wealth || 0) < repairCost}
+                        class="steampunk-button text-lg bg-gradient-to-b from-green-600 to-green-700 border-green-500 hover:from-green-500 hover:to-green-600"
+                      >
+                        {processing() ? '维修中...' : '🔧 立即维修'}
+                      </button>
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={maxRepair === 0}>
+                  <div class="text-center p-8 text-green-400">
+                    <div class="text-5xl mb-3">✨</div>
+                    <div class="text-xl font-bold">飞艇状态完美，无需维修！</div>
+                  </div>
+                </Show>
               </Show>
             </div>
           </Show>
