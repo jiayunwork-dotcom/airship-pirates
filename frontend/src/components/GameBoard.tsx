@@ -287,10 +287,35 @@ const OrdersPanel: Component = () => {
   const [orderType, setOrderType] = createSignal<ActionType>(ActionType.MOVE);
   const [targetX, setTargetX] = createSignal<string>('');
   const [targetY, setTargetY] = createSignal<string>('');
+  const [tradeAction, setTradeAction] = createSignal<'buy' | 'sell'>('buy');
+  const [tradeCargoType, setTradeCargoType] = createSignal<string>('');
+  const [tradeAmount, setTradeAmount] = createSignal<string>('1');
+  const [altitude, setAltitude] = createSignal<string>('');
+  const [repairAmount, setRepairAmount] = createSignal<string>('');
+  const [tollAmount, setTollAmount] = createSignal<string>('');
+  const [targetShipId, setTargetShipId] = createSignal<string>('');
 
   const selectedAirship = createMemo(() => {
     if (!store.selectedAirshipId || !store.gameState) return null;
     return store.gameState.airships.find((a) => a.id === store.selectedAirshipId) || null;
+  });
+
+  const currentCityOfAirship = createMemo(() => {
+    const ship = selectedAirship();
+    if (!ship || !ship.current_city_id || !store.gameState) return null;
+    return store.gameState.cities.find((c) => c.id === ship.current_city_id) || null;
+  });
+
+  const availableTradeGoods = createMemo(() => {
+    const city = currentCityOfAirship();
+    if (!city) return [];
+    return city.trade_goods;
+  });
+
+  const otherAirships = createMemo(() => {
+    const ship = selectedAirship();
+    if (!ship || !store.gameState) return [];
+    return store.gameState.airships.filter((a) => a.id !== ship.id);
   });
 
   const validateCoordinate = (xStr: string, yStr: string): { valid: boolean; error?: string; x?: number; y?: number } => {
@@ -308,6 +333,47 @@ const OrdersPanel: Component = () => {
     return { valid: true, x, y };
   };
 
+  const getCargoTypeName = (type: string): string => {
+    const names: Record<string, string> = {
+      food: '食物',
+      fuel: '燃料',
+      metals: '金属',
+      textiles: '纺织品',
+      gems: '宝石',
+      weapons: '武器',
+      luxuries: '奢侈品',
+      medicine: '药品',
+    };
+    return names[type] || type;
+  };
+
+  const isOrderValid = (): boolean => {
+    const ship = selectedAirship();
+    if (!ship) return false;
+    switch (orderType()) {
+      case ActionType.MOVE:
+        return !!targetX() && !!targetY();
+      case ActionType.CHANGE_ALTITUDE:
+        return altitude() !== '' && !isNaN(Number(altitude()));
+      case ActionType.TRADE:
+        if (!tradeCargoType() || !tradeAmount()) return false;
+        if (isNaN(Number(tradeAmount())) || Number(tradeAmount()) <= 0) return false;
+        if (tradeAction() === 'buy') {
+          return ship.status === 'docked' && !!ship.current_city_id;
+        }
+        return true;
+      case ActionType.REPAIR:
+        return repairAmount() !== '' && !isNaN(Number(repairAmount())) && Number(repairAmount()) > 0;
+      case ActionType.SET_TOLL:
+        return tollAmount() !== '' && !isNaN(Number(tollAmount()));
+      case ActionType.ATTACK:
+      case ActionType.BOARD:
+        return !!targetShipId();
+      default:
+        return true;
+    }
+  };
+
   const addOrder = () => {
     const ship = selectedAirship();
     if (!ship) {
@@ -315,18 +381,74 @@ const OrdersPanel: Component = () => {
       return;
     }
 
-    let params = {};
-    if (orderType() === ActionType.MOVE) {
-      if (!targetX() || !targetY()) {
-        store.addNotification('请输入目标坐标');
-        return;
+    let params: Record<string, any> = {};
+    switch (orderType()) {
+      case ActionType.MOVE: {
+        if (!targetX() || !targetY()) {
+          store.addNotification('请输入目标坐标');
+          return;
+        }
+        const validation = validateCoordinate(targetX(), targetY());
+        if (!validation.valid) {
+          store.addNotification(validation.error!);
+          return;
+        }
+        params = { x: validation.x!, y: validation.y! };
+        break;
       }
-      const validation = validateCoordinate(targetX(), targetY());
-      if (!validation.valid) {
-        store.addNotification(validation.error!);
-        return;
+      case ActionType.CHANGE_ALTITUDE: {
+        const alt = Number(altitude());
+        if (isNaN(alt)) {
+          store.addNotification('请输入有效高度');
+          return;
+        }
+        params = { altitude: alt };
+        break;
       }
-      params = { x: validation.x!, y: validation.y! };
+      case ActionType.TRADE: {
+        if (!tradeCargoType()) {
+          store.addNotification('请选择货物类型');
+          return;
+        }
+        const amt = Number(tradeAmount());
+        if (isNaN(amt) || amt <= 0) {
+          store.addNotification('请输入有效数量');
+          return;
+        }
+        params = {
+          trade_action: tradeAction(),
+          cargo_type: tradeCargoType(),
+          amount: amt,
+        };
+        break;
+      }
+      case ActionType.REPAIR: {
+        const amt = Number(repairAmount());
+        if (isNaN(amt) || amt <= 0) {
+          store.addNotification('请输入有效的维修数量');
+          return;
+        }
+        params = { amount: amt };
+        break;
+      }
+      case ActionType.SET_TOLL: {
+        const amt = Number(tollAmount());
+        if (isNaN(amt)) {
+          store.addNotification('请输入有效的设卡费用');
+          return;
+        }
+        params = { toll: amt };
+        break;
+      }
+      case ActionType.ATTACK:
+      case ActionType.BOARD: {
+        if (!targetShipId()) {
+          store.addNotification('请选择目标飞艇');
+          return;
+        }
+        params = { target_ship_id: targetShipId() };
+        break;
+      }
     }
 
     const order: Order = {
@@ -339,6 +461,11 @@ const OrdersPanel: Component = () => {
     setPendingOrders((prev) => [...prev, order]);
     setTargetX('');
     setTargetY('');
+    setTradeAmount('1');
+    setAltitude('');
+    setRepairAmount('');
+    setTollAmount('');
+    setTargetShipId('');
   };
 
   const removeOrder = (index: number) => {
@@ -380,48 +507,158 @@ const OrdersPanel: Component = () => {
             </Show>
           </div>
 
-          <div class="flex items-center gap-2 mb-2">
-            <select
-              value={orderType()}
-              onChange={(e) => setOrderType(e.currentTarget.value as ActionType)}
-              class="steampunk-input text-sm py-1 w-36"
-            >
-              <For each={Object.entries(actionLabels)}>
-                {([type, info]) => (
-                  <option value={type}>{info.icon} {info.label}</option>
-                )}
-              </For>
-            </select>
+          <div class="space-y-2 mb-2">
+            <div class="flex items-center gap-2 flex-wrap">
+              <select
+                value={orderType()}
+                onChange={(e) => setOrderType(e.currentTarget.value as ActionType)}
+                class="steampunk-input text-sm py-1 w-36"
+              >
+                <For each={Object.entries(actionLabels)}>
+                  {([type, info]) => (
+                    <option value={type}>{info.icon} {info.label}</option>
+                  )}
+                </For>
+              </select>
 
-            <Show when={orderType() === ActionType.MOVE}>
-              <input
-                type="number"
-                placeholder="X"
-                value={targetX()}
-                onInput={(e) => setTargetX(e.currentTarget.value)}
-                class="steampunk-input text-sm py-1 w-16 text-center"
-                min={0}
-                max={MAP_WIDTH}
-              />
-              <span class="text-amber-300">,</span>
-              <input
-                type="number"
-                placeholder="Y"
-                value={targetY()}
-                onInput={(e) => setTargetY(e.currentTarget.value)}
-                class="steampunk-input text-sm py-1 w-16 text-center"
-                min={0}
-                max={MAP_HEIGHT}
-              />
+              <Show when={orderType() === ActionType.MOVE}>
+                <input
+                  type="number"
+                  placeholder="X"
+                  value={targetX()}
+                  onInput={(e) => setTargetX(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-16 text-center"
+                  min={0}
+                  max={MAP_WIDTH}
+                />
+                <span class="text-amber-300">,</span>
+                <input
+                  type="number"
+                  placeholder="Y"
+                  value={targetY()}
+                  onInput={(e) => setTargetY(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-16 text-center"
+                  min={0}
+                  max={MAP_HEIGHT}
+                />
+              </Show>
+
+              <Show when={orderType() === ActionType.CHANGE_ALTITUDE}>
+                <input
+                  type="number"
+                  placeholder="高度值"
+                  value={altitude()}
+                  onInput={(e) => setAltitude(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-24"
+                />
+              </Show>
+
+              <Show when={orderType() === ActionType.REPAIR}>
+                <input
+                  type="number"
+                  placeholder="维修量"
+                  value={repairAmount()}
+                  onInput={(e) => setRepairAmount(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-24"
+                  min={1}
+                />
+              </Show>
+
+              <Show when={orderType() === ActionType.SET_TOLL}>
+                <input
+                  type="number"
+                  placeholder="通行费"
+                  value={tollAmount()}
+                  onInput={(e) => setTollAmount(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-24"
+                  min={0}
+                />
+              </Show>
+
+              <Show when={orderType() === ActionType.ATTACK || orderType() === ActionType.BOARD}>
+                <select
+                  value={targetShipId()}
+                  onChange={(e) => setTargetShipId(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-32"
+                >
+                  <option value="">选择目标飞艇</option>
+                  <For each={otherAirships()}>
+                    {(ship) => (
+                      <option value={ship.id}>{ship.name}</option>
+                    )}
+                  </For>
+                </select>
+              </Show>
+
+              <button
+                onClick={addOrder}
+                class="steampunk-button text-sm py-1 px-3"
+                disabled={!isOrderValid()}
+              >
+                ➕ 添加
+              </button>
+            </div>
+
+            <Show when={orderType() === ActionType.TRADE}>
+              <div class="flex items-center gap-2 flex-wrap bg-stone-900/40 p-2 rounded border border-brass/20">
+                <select
+                  value={tradeAction()}
+                  onChange={(e) => setTradeAction(e.currentTarget.value as 'buy' | 'sell')}
+                  class="steampunk-input text-sm py-1 w-24"
+                >
+                  <option value="buy">🛒 购买</option>
+                  <option value="sell">💰 出售</option>
+                </select>
+
+                <Show
+                  when={tradeAction() === 'buy' && availableTradeGoods().length > 0}
+                  fallback={
+                    <select
+                      value={tradeCargoType()}
+                      onChange={(e) => setTradeCargoType(e.currentTarget.value)}
+                      class="steampunk-input text-sm py-1 w-28"
+                    >
+                      <option value="">选择货物</option>
+                      <For each={selectedAirship()?.cargo || []}>
+                        {(cargo) => (
+                          <option value={cargo.type}>
+                            {getCargoTypeName(cargo.type)} x{cargo.amount}
+                          </option>
+                        )}
+                      </For>
+                    </select>
+                  }
+                >
+                  <select
+                    value={tradeCargoType()}
+                    onChange={(e) => setTradeCargoType(e.currentTarget.value)}
+                    class="steampunk-input text-sm py-1 w-28"
+                  >
+                    <option value="">选择货物</option>
+                    <For each={availableTradeGoods()}>
+                      {(good) => (
+                        <option value={good.type}>
+                          {getCargoTypeName(good.type)} 💰{good.buy_price} 库存{good.supply}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                </Show>
+
+                <input
+                  type="number"
+                  placeholder="数量"
+                  value={tradeAmount()}
+                  onInput={(e) => setTradeAmount(e.currentTarget.value)}
+                  class="steampunk-input text-sm py-1 w-20 text-center"
+                  min={1}
+                />
+
+                <Show when={tradeAction() === 'buy' && !currentCityOfAirship()}>
+                  <span class="text-red-400 text-xs">⚠ 飞艇未停靠在城市</span>
+                </Show>
+              </div>
             </Show>
-
-            <button
-              onClick={addOrder}
-              class="steampunk-button text-sm py-1 px-3"
-              disabled={!selectedAirship()}
-            >
-              ➕ 添加
-            </button>
           </div>
 
           <div class="flex-1 bg-stone-900/60 rounded border border-brass/30 p-2 overflow-y-auto scrollbar-steampunk">
@@ -442,6 +679,25 @@ const OrdersPanel: Component = () => {
                         {order.params?.x !== undefined && order.params?.y !== undefined && (
                           <span class="text-amber-300 font-mono">
                             ({order.params.x},{order.params.y})
+                          </span>
+                        )}
+                        {order.params?.trade_action && order.params?.cargo_type && (
+                          <span class="text-amber-300">
+                            {order.params.trade_action === 'buy' ? '🛒买' : '💰卖'} {getCargoTypeName(order.params.cargo_type)} x{order.params.amount}
+                          </span>
+                        )}
+                        {order.params?.altitude !== undefined && (
+                          <span class="text-amber-300">高度{order.params.altitude}</span>
+                        )}
+                        {order.params?.amount !== undefined && order.type === 'repair' && (
+                          <span class="text-amber-300">修{order.params.amount}HP</span>
+                        )}
+                        {order.params?.toll !== undefined && (
+                          <span class="text-amber-300">费{order.params.toll}💰</span>
+                        )}
+                        {order.params?.target_ship_id && (
+                          <span class="text-amber-300">
+                            →{store.gameState?.airships.find(a => a.id === order.params.target_ship_id)?.name?.slice(0, 6) || order.params.target_ship_id.slice(0, 6)}
                           </span>
                         )}
                         <button

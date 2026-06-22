@@ -75,6 +75,17 @@ const ROLE_COLORS: Record<CrewRole, string> = {
   crewman: 'bg-stone-600',
 };
 
+const ROLE_BORDER_COLORS: Record<CrewRole, string> = {
+  captain: 'border-amber-500/50',
+  pilot: 'border-sky-500/50',
+  gunner: 'border-red-500/50',
+  engineer: 'border-purple-500/50',
+  navigator: 'border-blue-500/50',
+  medic: 'border-green-500/50',
+  marine: 'border-orange-500/50',
+  crewman: 'border-stone-500/50',
+};
+
 const StatusBar: Component<{
   value: number;
   max: number;
@@ -147,28 +158,38 @@ const ModuleCard: Component<{ module: ShipModule; index: number }> = (props) => 
 };
 
 const CrewCard: Component<{ crew: CrewMember }> = (props) => {
-  const hpPercent = (props.crew.health / 100) * 100;
+  const hpPercent = Math.max(0, Math.min(100, (props.crew.health / 100) * 100));
   const role = props.crew.role;
+  const hpColor = hpPercent > 50 ? 'bg-green-500' : hpPercent > 25 ? 'bg-yellow-500' : 'bg-red-500';
   return (
-    <div class={`p-2 rounded border ${ROLE_COLORS[role]}/30 border-white/20`}>
-      <div class="flex items-center justify-between mb-1">
-        <span class="text-xs font-bold text-amber-100">{props.crew.name}</span>
-        <span class={`text-[10px] px-1.5 py-0.5 rounded text-white ${ROLE_COLORS[role]}`}>
+    <div class={`p-3 rounded-lg border-2 bg-stone-800/70 ${ROLE_BORDER_COLORS[role]}`}>
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-bold text-amber-100">{props.crew.name}</span>
+        <span class={`text-[11px] px-2 py-0.5 rounded text-white font-semibold ${ROLE_COLORS[role]}`}>
           {CREW_ROLE_NAMES[role]}
         </span>
       </div>
-      <div class="flex items-center gap-2 text-[10px] text-amber-200/80">
-        <div class="flex-1 h-1 bg-stone-700 rounded-full overflow-hidden">
+      <div class="mb-2">
+        <div class="flex items-center justify-between text-xs text-amber-200/80 mb-1">
+          <span>❤️ 生命值</span>
+          <span class="font-mono">{props.crew.health}/100</span>
+        </div>
+        <div class="w-full h-2.5 bg-stone-700 rounded-full overflow-hidden">
           <div
-            class={`h-full ${hpPercent > 50 ? 'bg-green-500' : hpPercent > 25 ? 'bg-yellow-500' : 'bg-red-500'}`}
+            class={`h-full rounded-full ${hpColor} transition-all duration-300`}
             style={{ width: `${hpPercent}%` }}
           />
         </div>
-        <span>HP {props.crew.health}/100</span>
       </div>
-      <div class="flex gap-2 mt-1 text-[9px] text-amber-200/60">
-        <span>技能: {props.crew.skill}</span>
-        <span>士气: {props.crew.morale}</span>
+      <div class="grid grid-cols-2 gap-2 text-xs text-amber-200/80">
+        <div class="flex items-center justify-between bg-stone-700/40 px-2 py-1 rounded">
+          <span>⭐ 技能</span>
+          <span class="font-mono text-amber-300 font-bold">{props.crew.skill}</span>
+        </div>
+        <div class="flex items-center justify-between bg-stone-700/40 px-2 py-1 rounded">
+          <span>😀 士气</span>
+          <span class="font-mono text-amber-300 font-bold">{props.crew.morale}</span>
+        </div>
       </div>
     </div>
   );
