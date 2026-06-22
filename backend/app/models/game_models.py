@@ -57,6 +57,15 @@ class BattlePhase(str, Enum):
     ENDED = "ended"
 
 
+class JointCombatStatus(str, Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    BETRAYED = "betrayed"
+
+
 class ShipStatus(str, Enum):
     DOCKED = "docked"
     FLYING = "flying"
@@ -279,6 +288,11 @@ class BattleReport(BaseModel):
     is_sink: bool = False
     is_capture: bool = False
     turn_number: int = 0
+    is_joint_combat: bool = False
+    attacker_b_ship_id: str = ""
+    attacker_b_ship_name: str = ""
+    attacker_b_player_id: str = ""
+    loot_split: Dict[str, int] = Field(default_factory=dict)
 
 
 class Alliance(BaseModel):
@@ -298,6 +312,20 @@ class PendingInvite(BaseModel):
     from_player_id: str
     from_player_name: str
     to_player_id: str
+    created_at_turn: int = 0
+
+
+class JointCombatProposal(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    proposer_id: str
+    ally_id: str
+    target_player_id: str
+    attack_turn: int = 0
+    status: JointCombatStatus = JointCombatStatus.PENDING
+    proposer_ship_id: str = ""
+    ally_ship_id: str = ""
+    target_ship_id: str = ""
     created_at_turn: int = 0
 
 
@@ -335,6 +363,13 @@ class Battle(BaseModel):
     ship_b_boarded: bool = False
     smoke_screen_active: bool = False
     smoke_screen_turns: int = 0
+    is_joint_combat: bool = False
+    ship_c_id: Optional[str] = None
+    ship_c_morale: int = 80
+    ship_c_actions: List[BattleAction] = Field(default_factory=list)
+    defender_facing: str = "port"
+    attacker_a_damage_total: int = 0
+    attacker_b_damage_total: int = 0
 
 
 class Order(BaseModel):
@@ -366,6 +401,7 @@ class GameState(BaseModel):
     alliances: List[Alliance] = Field(default_factory=list)
     pending_invites: List[PendingInvite] = Field(default_factory=list)
     waypoint_pass_records: List[WaypointPassRecord] = Field(default_factory=list)
+    joint_combat_proposals: List[JointCombatProposal] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -412,3 +448,19 @@ class SuggestHeadingRequest(BaseModel):
     ally_player_id: str
     ship_id: str
     target_position: Dict[str, float]
+
+
+class JointCombatProposalRequest(BaseModel):
+    player_id: str
+    ally_player_id: str
+    target_player_id: str
+    attack_turn: int
+    proposer_ship_id: str = ""
+    ally_ship_id: str = ""
+    target_ship_id: str = ""
+
+
+class JointCombatConfirmRequest(BaseModel):
+    player_id: str
+    proposal_id: str
+    accept: bool = True

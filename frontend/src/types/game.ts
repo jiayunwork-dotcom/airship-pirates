@@ -51,6 +51,15 @@ export enum BattlePhase {
   ENDED = 'ended',
 }
 
+export enum JointCombatStatus {
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  ACTIVE = 'active',
+  COMPLETED = 'completed',
+  CANCELLED = 'cancelled',
+  BETRAYED = 'betrayed',
+}
+
 export enum ShipStatus {
   DOCKED = 'docked',
   FLYING = 'flying',
@@ -259,6 +268,11 @@ export interface BattleReport {
   is_sink: boolean;
   is_capture: boolean;
   turn_number: number;
+  is_joint_combat: boolean;
+  attacker_b_ship_id: string;
+  attacker_b_ship_name: string;
+  attacker_b_player_id: string;
+  loot_split: Record<string, number>;
 }
 
 export interface Alliance {
@@ -286,6 +300,19 @@ export interface WaypointPassRecord {
   turn: number;
 }
 
+export interface JointCombatProposal {
+  id: string;
+  proposer_id: string;
+  ally_id: string;
+  target_player_id: string;
+  attack_turn: number;
+  status: JointCombatStatus;
+  proposer_ship_id: string;
+  ally_ship_id: string;
+  target_ship_id: string;
+  created_at_turn: number;
+}
+
 export interface BattleAction {
   type: ActionType;
   target_module?: ModuleTarget | null;
@@ -310,6 +337,13 @@ export interface Battle {
   ship_b_boarded: boolean;
   smoke_screen_active: boolean;
   smoke_screen_turns: number;
+  is_joint_combat: boolean;
+  ship_c_id?: string | null;
+  ship_c_morale: number;
+  ship_c_actions: BattleAction[];
+  defender_facing: string;
+  attacker_a_damage_total: number;
+  attacker_b_damage_total: number;
 }
 
 export interface Order {
@@ -339,6 +373,7 @@ export interface GameState {
   alliances: Alliance[];
   pending_invites: PendingInvite[];
   waypoint_pass_records: WaypointPassRecord[];
+  joint_combat_proposals: JointCombatProposal[];
   created_at: string;
 }
 

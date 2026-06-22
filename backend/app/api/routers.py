@@ -5,7 +5,8 @@ from app.models.game_models import (
     RoomCreateRequest, JoinRoomRequest,
     OrdersSubmitRequest, BattleActionsSubmitRequest,
     InviteAllianceRequest, RespondInviteRequest,
-    DissolveAllianceRequest, SuggestHeadingRequest
+    DissolveAllianceRequest, SuggestHeadingRequest,
+    JointCombatProposalRequest, JointCombatConfirmRequest
 )
 from app.services.room_manager import room_manager
 from app.services.websocket_manager import ws_manager
@@ -108,10 +109,13 @@ async def submit_battle_actions(room_id: str, request: BattleActionsSubmitReques
     if battle is None:
         raise HTTPException(status_code=404, detail="Battle not found")
     
+    battle_ship_ids = [battle.ship_a_id, battle.ship_b_id]
+    if battle.is_joint_combat and battle.ship_c_id:
+        battle_ship_ids.append(battle.ship_c_id)
     player_in_battle = any(
         a.player_id == request.player_id 
         for a in state.airships 
-        if a.id in [battle.ship_a_id, battle.ship_b_id]
+        if a.id in battle_ship_ids
     )
     if not player_in_battle:
         raise HTTPException(status_code=403, detail="Player not involved in this battle")
@@ -273,6 +277,85 @@ async def suggest_heading_endpoint(room_id: str, request: SuggestHeadingRequest)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
+    return state
+
+
+@router.post("/rooms/{room_id}/alliance/joint_combat/propose", response_model=GameState)
+async def propose_joint_combat(room_id: str, request: JointCombatProposalRequest):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    player = next((p for p in state.players if p.id == request.player_id), None)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    ally = next((p for p in state.players if p.id == request.ally_player_id), None)
+    if ally is None:
+        raise HTTPException(status_code=404, detail="Ally player not found")
+
+    target = next((p for p in state.players if p.id == request.target_player_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target player not found")
+
+    try:
+        state = await room_manager.propose_joint_combat(
+            room_id,
+            request.player_id,
+            request.ally_player_id,
+            request.target_player_id,
+            request.attack_turn,
+            request.proposer_ship_id,
+            request.ally_ship_id,
+            request.target_ship_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return state
+
+
+@router.post("/rooms/{room_id}/alliance/joint_combat/confirm", response_model=GameState)
+async def confirm_joint_combat(room_id: str, request: JointCombatConfirmRequest):
+    state = await room_manager.get_state(room_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    player = next((p for p in state.players if p.id == request.player_id), None)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    if request.accept:
+        try:
+            state = await room_manager.confirm_joint_combat(
+                room_id,
+                request.proposal_id,
+                request.player_id
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        proposal = next((p for p in state.joint_combat_proposals if p.id == request.proposal_id), None)
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+        if proposal.ally_id != request.player_id:
+            raise HTTPException(status_code=403, detail="Only the ally can reject this proposal")
+
+        from app.models.game_models import JointCombatStatus
+        proposal.status = JointCombatStatus.CANCELLED
+        state.event_log.append(f"❌ Joint combat proposal rejected by {player.name}")
+        await room_manager.save_state(room_id, state)
+        await ws_manager.broadcast_state(room_id, state)
+
+        await ws_manager.send_private(room_id, proposal.proposer_id, {
+            "type": "joint_combat_rejected",
+            "data": {
+                "proposal_id": proposal.id,
+                "rejecter_id": request.player_id,
+                "rejecter_name": player.name
+            }
+        })
+
     return state
 
 

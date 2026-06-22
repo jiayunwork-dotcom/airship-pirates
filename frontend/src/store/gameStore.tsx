@@ -43,6 +43,8 @@ export interface GameStoreActions {
   dissolveAlliance: (allyPlayerId: string) => Promise<void>;
   suggestHeading: (allyPlayerId: string, shipId: string, targetPos: { x: number; y: number }) => Promise<void>;
   dismissBetrayalWarning: () => void;
+  proposeJointCombat: (allyPlayerId: string, targetPlayerId: string, attackTurn: number, proposerShipId?: string, allyShipId?: string, targetShipId?: string) => Promise<void>;
+  confirmJointCombat: (proposalId: string, accept: boolean) => Promise<void>;
 }
 
 export type GameStore = GameStoreState & GameStoreActions;
@@ -190,6 +192,21 @@ function createGameStore(): GameStore {
         addNotification('❌ 联盟邀请被拒绝');
       } else if (type === 'heading_suggestion') {
         addNotification(`🧭 收到盟友的航向建议！`);
+      } else if (type === 'joint_combat_proposal') {
+        addNotification(`⚔️ 收到来自 ${msg.data?.proposer_name || ''} 的联合作战提案！`);
+      } else if (type === 'joint_combat_confirmed') {
+        addNotification(`✅ 联合作战提案已确认！进攻回合: ${msg.data?.attack_turn || ''}`);
+      } else if (type === 'joint_combat_rejected') {
+        addNotification(`❌ 联合作战提案被 ${msg.data?.rejecter_name || ''} 拒绝了`);
+      } else if (type === 'battle_report') {
+        const report = msg.data;
+        if (report?.is_joint_combat) {
+          addNotification(`📜 联合作战报告已生成！结果: ${report?.result || ''}`);
+        } else {
+          addNotification(`📜 战斗报告已生成！结果: ${report?.result || ''}`);
+        }
+      } else if (type === 'event' && msg.event_type === 'joint_combat_resolved') {
+        addNotification(`⚔️ 联合作战已结算`);
       } else if (type === 'error') {
         setError(msg.message || '发生错误');
       } else if (type === 'pong') {
@@ -580,6 +597,69 @@ function createGameStore(): GameStore {
     setBetrayalInfo(null);
   };
 
+  const proposeJointCombat = async (
+    allyPlayerId: string,
+    targetPlayerId: string,
+    attackTurn: number,
+    proposerShipId: string = '',
+    allyShipId: string = '',
+    targetShipId: string = ''
+  ) => {
+    try {
+      const rid = currentRoom()?.id as string;
+      const pid = getPlayerId();
+      const res = await fetch(`${API_BASE_URL}/rooms/${rid}/alliance/joint_combat/propose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: pid,
+          ally_player_id: allyPlayerId,
+          target_player_id: targetPlayerId,
+          attack_turn: attackTurn,
+          proposer_ship_id: proposerShipId,
+          ally_ship_id: allyShipId,
+          target_ship_id: targetShipId,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '发起联合作战提案失败');
+      }
+      const state: GameState = await res.json();
+      updateFromState(state);
+      addNotification('联合作战提案已发送');
+    } catch (e: any) {
+      setError(e.message || '发起联合作战提案失败');
+      throw e;
+    }
+  };
+
+  const confirmJointCombat = async (proposalId: string, accept: boolean) => {
+    try {
+      const rid = currentRoom()?.id as string;
+      const pid = getPlayerId();
+      const res = await fetch(`${API_BASE_URL}/rooms/${rid}/alliance/joint_combat/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_id: pid,
+          proposal_id: proposalId,
+          accept,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || '处理联合作战提案失败');
+      }
+      const state: GameState = await res.json();
+      updateFromState(state);
+      addNotification(accept ? '已确认联合作战提案' : '已拒绝联合作战提案');
+    } catch (e: any) {
+      setError(e.message || '处理联合作战提案失败');
+      throw e;
+    }
+  };
+
   onCleanup(() => {
     disconnectWebSocket();
   });
@@ -627,6 +707,8 @@ function createGameStore(): GameStore {
     dissolveAlliance,
     suggestHeading,
     dismissBetrayalWarning,
+    proposeJointCombat,
+    confirmJointCombat,
   };
 }
 

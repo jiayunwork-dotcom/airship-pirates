@@ -7,7 +7,8 @@ from app.models.game_models import (
 from app.core.game_engine import (
     initialize_game, assign_player_to_game, process_turn,
     check_all_players_ready, start_game, create_alliance_invite,
-    respond_to_invite, dissolve_alliance, suggest_heading
+    respond_to_invite, dissolve_alliance, suggest_heading,
+    create_joint_combat_proposal, confirm_joint_combat_proposal
 )
 from app.core.redis_client import RedisClient
 from app.services.websocket_manager import ws_manager
@@ -156,6 +157,8 @@ class RoomManager:
             battle.attacker_actions = actions
         elif battle.ship_b_id in player_ships:
             battle.defender_actions = actions
+        elif battle.is_joint_combat and battle.ship_c_id and battle.ship_c_id in player_ships:
+            battle.ship_c_actions = actions
         else:
             raise ValueError("Player not involved in this battle")
         
@@ -181,7 +184,30 @@ class RoomManager:
             if state.phase == "ended":
                 return state
             
+            prev_report_count = len(state.battle_reports)
             state = process_turn(state)
+            
+            new_reports = state.battle_reports[prev_report_count:]
+            for report in new_reports:
+                affected_players = [report.attacker_player_id, report.defender_player_id]
+                if report.is_joint_combat and report.attacker_b_player_id:
+                    affected_players.append(report.attacker_b_player_id)
+                for pid in affected_players:
+                    if pid:
+                        await ws_manager.send_private(room_id, pid, {
+                            "type": "battle_report",
+                            "data": report.model_dump(mode="json")
+                        })
+                if report.is_joint_combat:
+                    await ws_manager.broadcast_event(room_id, "joint_combat_resolved", {
+                        "battle_id": report.battle_id,
+                        "attacker_a": report.attacker_player_id,
+                        "attacker_b": report.attacker_b_player_id,
+                        "defender": report.defender_player_id,
+                        "result": report.result,
+                        "loot_split": report.loot_split
+                    })
+            
             await self._save_state_to_store(state)
             await ws_manager.broadcast_state(room_id, state)
             
@@ -329,6 +355,67 @@ class RoomManager:
             }
         })
         
+        return state
+
+    async def propose_joint_combat(self, room_id: str, proposer_id: str, ally_id: str,
+                                    target_player_id: str, attack_turn: int,
+                                    proposer_ship_id: str = "", ally_ship_id: str = "",
+                                    target_ship_id: str = "") -> Optional[GameState]:
+        state = await self.get_state(room_id)
+        if state is None:
+            return None
+
+        if state.phase == "lobby":
+            raise ValueError("Game has not started yet")
+
+        proposal = create_joint_combat_proposal(
+            state, proposer_id, ally_id, target_player_id, attack_turn,
+            proposer_ship_id, ally_ship_id, target_ship_id
+        )
+        if proposal is None:
+            raise ValueError("Could not create joint combat proposal")
+
+        await self._save_state_to_store(state)
+        await ws_manager.broadcast_state(room_id, state)
+
+        await ws_manager.send_private(room_id, ally_id, {
+            "type": "joint_combat_proposal",
+            "data": {
+                "proposal_id": proposal.id,
+                "proposer_id": proposer_id,
+                "proposer_name": next((p.name for p in state.players if p.id == proposer_id), ""),
+                "target_player_id": target_player_id,
+                "target_player_name": next((p.name for p in state.players if p.id == target_player_id), ""),
+                "attack_turn": attack_turn,
+                "created_at_turn": proposal.created_at_turn
+            }
+        })
+
+        return state
+
+    async def confirm_joint_combat(self, room_id: str, proposal_id: str, confirmer_id: str) -> Optional[GameState]:
+        state = await self.get_state(room_id)
+        if state is None:
+            return None
+
+        proposal = confirm_joint_combat_proposal(state, proposal_id, confirmer_id)
+        if proposal is None:
+            raise ValueError("Could not confirm joint combat proposal")
+
+        await self._save_state_to_store(state)
+        await ws_manager.broadcast_state(room_id, state)
+
+        await ws_manager.send_private(room_id, proposal.proposer_id, {
+            "type": "joint_combat_confirmed",
+            "data": {
+                "proposal_id": proposal.id,
+                "confirmer_id": confirmer_id,
+                "confirmer_name": next((p.name for p in state.players if p.id == confirmer_id), ""),
+                "target_player_id": proposal.target_player_id,
+                "attack_turn": proposal.attack_turn
+            }
+        })
+
         return state
 
 

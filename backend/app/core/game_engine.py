@@ -7,7 +7,8 @@ from app.models.game_models import (
     Order, GasBalloon, ShipModule, CrewMember, Cargo, TradeGood, Position,
     AltitudeLevel, ModuleType, GasType, WeatherType, ActionType, BattlePhase,
     ShipStatus, CityType, CargoType, CrewRole, ModuleTarget,
-    BattleActionRecord, BattleReport, Alliance, PendingInvite, WaypointPassRecord
+    BattleActionRecord, BattleReport, Alliance, PendingInvite, WaypointPassRecord,
+    JointCombatProposal, JointCombatStatus
 )
 from app.core.config import settings
 
@@ -1449,12 +1450,17 @@ def resolve_battles(state: GameState) -> GameState:
                     )
                     if battle.ship_a_id == order.ship_id:
                         battle.attacker_actions.append(action)
+                    elif battle.is_joint_combat and battle.ship_c_id == order.ship_id:
+                        battle.ship_c_actions.append(action)
                     else:
                         battle.defender_actions.append(action)
     
     active_battles = [b for b in state.battles if b.phase != BattlePhase.ENDED]
     for battle in active_battles:
-        _resolve_single_battle(battle, state)
+        if battle.is_joint_combat:
+            _resolve_joint_combat_battle(battle, state)
+        else:
+            _resolve_single_battle(battle, state)
     
     return state
 
@@ -1841,8 +1847,11 @@ def process_turn(state: GameState) -> GameState:
     state.phase = "processing"
     
     resolve_movement(state)
+    resolve_joint_combat(state)
+    resolve_joint_combat_betrayals(state)
     resolve_encounters(state)
     resolve_battles(state)
+    _finalize_joint_combat_proposals(state)
     resolve_trade(state)
     resolve_weather(state)
     resolve_events(state)
@@ -1870,6 +1879,8 @@ def process_turn(state: GameState) -> GameState:
         for battle in state.battles:
             battle.attacker_actions = []
             battle.defender_actions = []
+            if battle.is_joint_combat:
+                battle.ship_c_actions = []
     
     return state
 
@@ -1878,6 +1889,686 @@ def check_all_players_ready(state: GameState) -> bool:
     if not state.players:
         return False
     return all(p.ready for p in state.players)
+
+
+def create_joint_combat_proposal(state: GameState, proposer_id: str, ally_id: str,
+                                  target_player_id: str, attack_turn: int,
+                                  proposer_ship_id: str = "", ally_ship_id: str = "",
+                                  target_ship_id: str = "") -> Optional[JointCombatProposal]:
+    alliance = get_alliance(state, proposer_id, ally_id)
+    if not alliance or alliance.trust_level < 3:
+        return None
+
+    if target_player_id == proposer_id or target_player_id == ally_id:
+        return None
+
+    target_player = next((p for p in state.players if p.id == target_player_id), None)
+    if not target_player:
+        return None
+
+    if attack_turn <= state.turn:
+        return None
+
+    for p in state.joint_combat_proposals:
+        if p.status in [JointCombatStatus.PENDING, JointCombatStatus.CONFIRMED, JointCombatStatus.ACTIVE]:
+            if p.proposer_id == proposer_id and p.ally_id == ally_id:
+                return None
+            if p.proposer_id == ally_id and p.ally_id == proposer_id:
+                return None
+
+    if not proposer_ship_id:
+        proposer_ship = next((a for a in state.airships if a.player_id == proposer_id and a.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]), None)
+        proposer_ship_id = proposer_ship.id if proposer_ship else ""
+
+    if not ally_ship_id:
+        ally_ship = next((a for a in state.airships if a.player_id == ally_id and a.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]), None)
+        ally_ship_id = ally_ship.id if ally_ship else ""
+
+    if not target_ship_id:
+        target_ship = next((a for a in state.airships if a.player_id == target_player_id and a.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]), None)
+        target_ship_id = target_ship.id if target_ship else ""
+
+    proposal = JointCombatProposal(
+        id=f"jc_{_generate_id()}",
+        proposer_id=proposer_id,
+        ally_id=ally_id,
+        target_player_id=target_player_id,
+        attack_turn=attack_turn,
+        status=JointCombatStatus.PENDING,
+        proposer_ship_id=proposer_ship_id,
+        ally_ship_id=ally_ship_id,
+        target_ship_id=target_ship_id,
+        created_at_turn=state.turn
+    )
+    state.joint_combat_proposals.append(proposal)
+
+    proposer_player = next((p for p in state.players if p.id == proposer_id), None)
+    ally_player = next((p for p in state.players if p.id == ally_id), None)
+    state.event_log.append(
+        f"⚔️ {proposer_player.name if proposer_player else proposer_id} proposed a joint combat "
+        f"against {target_player.name if target_player else target_player_id} at turn {attack_turn} "
+        f"(with {ally_player.name if ally_player else ally_id})"
+    )
+
+    return proposal
+
+
+def confirm_joint_combat_proposal(state: GameState, proposal_id: str, confirmer_id: str) -> Optional[JointCombatProposal]:
+    proposal = next((p for p in state.joint_combat_proposals if p.id == proposal_id), None)
+    if not proposal:
+        return None
+
+    if proposal.status != JointCombatStatus.PENDING:
+        return None
+
+    if proposal.ally_id != confirmer_id:
+        return None
+
+    alliance = get_alliance(state, proposal.proposer_id, proposal.ally_id)
+    if not alliance or alliance.trust_level < 3:
+        proposal.status = JointCombatStatus.CANCELLED
+        return None
+
+    proposal.status = JointCombatStatus.CONFIRMED
+
+    proposer_player = next((p for p in state.players if p.id == proposal.proposer_id), None)
+    ally_player = next((p for p in state.players if p.id == proposal.ally_id), None)
+    target_player = next((p for p in state.players if p.id == proposal.target_player_id), None)
+    state.event_log.append(
+        f"✅ Joint combat confirmed! {ally_player.name if ally_player else ally_id} agreed to "
+        f"attack {target_player.name if target_player else target_player_id} at turn {proposal.attack_turn}"
+    )
+
+    return proposal
+
+
+def _check_joint_combat_betrayal(state: GameState, proposal: JointCombatProposal,
+                                  ship_a: Airship, ship_c: Airship, ship_b: Airship) -> bool:
+    betrayed = False
+
+    if ship_a.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]:
+        if proposal.status == JointCombatStatus.ACTIVE and ship_a.in_battle_id is None:
+            _handle_betrayal(state, proposal.proposer_id, proposal.ally_id,
+                           f"{ship_a.name} fled the joint combat zone against {ship_b.name}")
+            proposal.status = JointCombatStatus.BETRAYED
+            betrayed = True
+        elif proposal.status == JointCombatStatus.ACTIVE and ship_b.status != ShipStatus.DESTROYED:
+            dist = _distance(ship_a.position, ship_b.position)
+            if dist > 200 and ship_a.in_battle_id is None:
+                _handle_betrayal(state, proposal.proposer_id, proposal.ally_id,
+                               f"{ship_a.name} left the battle zone (distance: {int(dist)}) during joint combat against {ship_b.name}")
+                proposal.status = JointCombatStatus.BETRAYED
+                betrayed = True
+
+    if ship_c.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]:
+        if proposal.status == JointCombatStatus.ACTIVE and ship_c.in_battle_id is None:
+            _handle_betrayal(state, proposal.ally_id, proposal.proposer_id,
+                           f"{ship_c.name} fled the joint combat zone against {ship_b.name}")
+            proposal.status = JointCombatStatus.BETRAYED
+            betrayed = True
+        elif proposal.status == JointCombatStatus.ACTIVE and ship_b.status != ShipStatus.DESTROYED:
+            dist = _distance(ship_c.position, ship_b.position)
+            if dist > 200 and ship_c.in_battle_id is None:
+                _handle_betrayal(state, proposal.ally_id, proposal.proposer_id,
+                               f"{ship_c.name} left the battle zone (distance: {int(dist)}) during joint combat against {ship_b.name}")
+                proposal.status = JointCombatStatus.BETRAYED
+                betrayed = True
+
+    return betrayed
+
+
+def _enforce_joint_combat_engagement(state: GameState, proposal: JointCombatProposal) -> None:
+    ship_a = next((a for a in state.airships if a.id == proposal.proposer_ship_id), None)
+    ship_c = next((a for a in state.airships if a.id == proposal.ally_ship_id), None)
+    ship_b = next((a for a in state.airships if a.id == proposal.target_ship_id), None)
+
+    if not ship_a or not ship_c or not ship_b:
+        return
+
+    _check_joint_combat_betrayal(state, proposal, ship_a, ship_c, ship_b)
+
+
+def resolve_joint_combat_betrayals(state: GameState) -> GameState:
+    active_proposals = [
+        p for p in state.joint_combat_proposals
+        if p.status == JointCombatStatus.ACTIVE
+    ]
+    for proposal in active_proposals:
+        _enforce_joint_combat_engagement(state, proposal)
+    return state
+
+
+def _resolve_joint_combat_battle(battle: Battle, state: GameState) -> None:
+    ship_a = next((a for a in state.airships if a.id == battle.ship_a_id), None)
+    ship_b = next((a for a in state.airships if a.id == battle.ship_b_id), None)
+    ship_c = next((a for a in state.airships if a.id == battle.ship_c_id), None) if battle.ship_c_id else None
+
+    if not ship_a or not ship_b:
+        battle.phase = BattlePhase.ENDED
+        return
+
+    if ship_a.status == ShipStatus.DESTROYED and (not ship_c or ship_c.status == ShipStatus.DESTROYED):
+        battle.winner = ship_b.player_id
+        battle.phase = BattlePhase.ENDED
+        battle.log.append(f"Battle ended: {ship_b.name} wins by default")
+        return
+    if ship_b.status == ShipStatus.DESTROYED:
+        battle.phase = BattlePhase.ENDED
+        return
+
+    action_records: List[BattleActionRecord] = []
+    battle.turn += 1
+
+    if battle.smoke_screen_turns > 0:
+        battle.smoke_screen_turns -= 1
+        if battle.smoke_screen_turns == 0:
+            battle.smoke_screen_active = False
+            battle.log.append("Smoke screen dissipates")
+
+    if battle.phase == BattlePhase.INITIATION:
+        battle.phase = BattlePhase.RANGED
+
+    defender_facing = battle.defender_facing
+
+    attacker_a_actions = [a for a in battle.attacker_actions if a]
+    attacker_b_actions = [a for a in battle.ship_c_actions if a]
+    defender_actions = [a for a in battle.defender_actions if a]
+
+    pincer_bonus = 0.3
+
+    def _apply_joint_attack(attacker: Airship, defender: Airship, actions: List[BattleAction],
+                            side: str, is_pincer: bool) -> int:
+        total_damage_dealt = 0
+        for action in actions:
+            if action.type == ActionType.ATTACK:
+                if battle.smoke_screen_active and random.random() < settings.smoke_screen_miss_chance:
+                    battle.log.append(f"{attacker.name}'s attack misses due to smoke screen!")
+                    action_records.append(BattleActionRecord(
+                        turn=battle.turn, action_type="attack",
+                        attacker_ship_id=attacker.id, attacker_ship_name=attacker.name,
+                        defender_ship_id=defender.id, defender_ship_name=defender.name,
+                        target_module=(action.target_module or ModuleTarget.ANY).value,
+                        damage=0, hit=False,
+                        special_effect="smoke_screen_miss", category="attack"
+                    ))
+                    continue
+
+                damage = _calculate_ship_attack_power(attacker, action)
+                if is_pincer and side != defender_facing:
+                    damage = int(damage * (1 + pincer_bonus))
+                    action.params["pincer_bonus"] = True
+
+                target = action.target_module or ModuleTarget.ANY
+                _apply_damage(defender, damage, target, state, battle, attacker, action_records)
+                total_damage_dealt += damage
+
+                if action.weapon_type == "incendiary" and defender.gas_balloon.flammable:
+                    if random.random() < 0.3:
+                        defender.gas_balloon.on_fire = True
+                        defender.gas_balloon.fire_damage_remaining = settings.incendiary_dot_damage * 3
+                        battle.log.append(f"{defender.name}'s balloon catches fire!")
+
+            elif action.type == ActionType.RETREAT:
+                retreat_chance = 0.2
+                if random.random() < retreat_chance:
+                    battle.phase = BattlePhase.ENDED
+                    attacker.in_battle_id = None
+                    attacker.status = ShipStatus.FLYING if attacker.current_city_id is None else ShipStatus.DOCKED
+                    battle.log.append(f"{attacker.name} retreats from joint combat!")
+                    state.event_log.append(f"{attacker.name} retreated from joint combat - BETRAYAL!")
+
+                    proposal = None
+                    for p in state.joint_combat_proposals:
+                        if p.status == JointCombatStatus.ACTIVE:
+                            ship_ids = {p.proposer_ship_id, p.ally_ship_id}
+                            if attacker.id in ship_ids:
+                                proposal = p
+                                break
+                    if proposal:
+                        betrayer_id = proposal.proposer_id if attacker.player_id == proposal.proposer_id else proposal.ally_id
+                        victim_id = proposal.ally_id if betrayer_id == proposal.proposer_id else proposal.proposer_id
+                        _handle_betrayal(state, betrayer_id, victim_id,
+                                       f"{attacker.name} retreated from joint combat")
+                        proposal.status = JointCombatStatus.BETRAYED
+                else:
+                    battle.log.append(f"{attacker.name} failed to retreat!")
+                    attacker.morale = max(0, attacker.morale - 10)
+
+        return total_damage_dealt
+
+    for action in defender_actions:
+        if action.type == ActionType.ATTACK:
+            if action.params.get("facing"):
+                battle.defender_facing = action.params["facing"]
+        elif action.type == ActionType.RETREAT:
+            retreat_chance = 0.3 + (ship_b.speed / 50) * 0.2
+            if random.random() < retreat_chance:
+                battle.phase = BattlePhase.ENDED
+                ship_a.in_battle_id = None
+                ship_b.in_battle_id = None
+                if ship_c:
+                    ship_c.in_battle_id = None
+                ship_a.status = ShipStatus.FLYING if ship_a.current_city_id is None else ShipStatus.DOCKED
+                ship_b.status = ShipStatus.FLYING if ship_b.current_city_id is None else ShipStatus.DOCKED
+                if ship_c:
+                    ship_c.status = ShipStatus.FLYING if ship_c.current_city_id is None else ShipStatus.DOCKED
+                battle.log.append(f"{ship_b.name} successfully retreats from joint combat!")
+                battle.winner = f"joint_{ship_a.player_id}_{ship_c.player_id if ship_c else ''}"
+                _finalize_joint_battle_report(battle, state, action_records, ship_a, ship_b, ship_c)
+                return
+
+    a_damage = _apply_joint_attack(ship_a, ship_b, attacker_a_actions, "port",
+                                    is_pincer=(ship_c is not None))
+    battle.attacker_a_damage_total += a_damage
+
+    if ship_c:
+        c_damage = _apply_joint_attack(ship_c, ship_b, attacker_b_actions, "starboard",
+                                        is_pincer=True)
+        battle.attacker_b_damage_total += c_damage
+
+    for action in defender_actions:
+        if action.type == ActionType.ATTACK:
+            if battle.smoke_screen_active and random.random() < settings.smoke_screen_miss_chance:
+                continue
+
+            target_choices = [ship_a]
+            if ship_c and ship_c.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]:
+                target_choices.append(ship_c)
+
+            if action.params.get("target_ship_id") == ship_c.id and ship_c in target_choices:
+                primary_target = ship_c
+            elif action.params.get("target_ship_id") == ship_a.id:
+                primary_target = ship_a
+            else:
+                primary_target = random.choice(target_choices)
+
+            damage = _calculate_ship_attack_power(ship_b, action)
+            target = action.target_module or ModuleTarget.ANY
+            _apply_damage(primary_target, damage, target, state, battle, ship_b, action_records)
+
+            if action.weapon_type == "incendiary" and primary_target.gas_balloon.flammable:
+                if random.random() < 0.3:
+                    primary_target.gas_balloon.on_fire = True
+                    primary_target.gas_balloon.fire_damage_remaining = settings.incendiary_dot_damage * 3
+
+        if action.type == ActionType.ATTACK and action.params.get("smoke_screen"):
+            battle.smoke_screen_active = True
+            battle.smoke_screen_turns = 2
+
+    for ship in [ship_a, ship_b, ship_c]:
+        if ship and ship.gas_balloon.on_fire and ship.gas_balloon.fire_damage_remaining > 0:
+            fd = settings.incendiary_dot_damage
+            ship.gas_balloon.durability = max(0, ship.gas_balloon.durability - fd)
+            ship.hp = max(0, ship.hp - fd // 2)
+            ship.gas_balloon.fire_damage_remaining -= fd
+            battle.log.append(f"{ship.name} takes {fd} fire damage")
+            if random.random() < 0.2:
+                ship.gas_balloon.on_fire = False
+                ship.gas_balloon.fire_damage_remaining = 0
+                battle.log.append(f"Crew extinguishes fire on {ship.name}!")
+
+    if battle.phase == BattlePhase.BOARDING:
+        _resolve_joint_boarding(ship_a, ship_c, ship_b, battle, state, action_records)
+
+    if ship_b.hp <= 0:
+        battle.phase = BattlePhase.ENDED
+        ship_b.status = ShipStatus.DESTROYED
+        battle.winner = f"joint_{ship_a.player_id}_{ship_c.player_id if ship_c else ''}"
+        battle.log.append(f"{ship_b.name} destroyed by joint attack!")
+    elif ship_a.hp <= 0 and (not ship_c or ship_c.hp <= 0):
+        battle.winner = ship_b.player_id
+        battle.phase = BattlePhase.ENDED
+        battle.log.append(f"Both attackers defeated! {ship_b.name} wins!")
+    elif ship_b.morale < 15:
+        battle.phase = BattlePhase.ENDED
+        battle.winner = f"joint_{ship_a.player_id}_{ship_c.player_id if ship_c else ''}"
+        battle.log.append(f"{ship_b.name} crew surrenders to the pincer attack!")
+    elif battle.turn >= 12 and battle.phase != BattlePhase.BOARDING:
+        battle.phase = BattlePhase.BOARDING
+        battle.log.append("Joint combat prolonged - closing for boarding action!")
+
+    if battle.phase == BattlePhase.ENDED:
+        ship_a.in_battle_id = None
+        ship_b.in_battle_id = None
+        if ship_c:
+            ship_c.in_battle_id = None
+
+        for ship in [s for s in [ship_a, ship_b, ship_c] if s]:
+            if ship.status not in [ShipStatus.DESTROYED, ShipStatus.DISABLED]:
+                repair_mod = next((m for m in ship.modules if m.module_type == ModuleType.REPAIR and m.durability > 0), None)
+                if repair_mod and repair_mod.repair_rate:
+                    repair = repair_mod.repair_rate
+                    ship.hp = min(ship.max_hp, ship.hp + repair // 2)
+                if ship.current_city_id:
+                    ship.status = ShipStatus.DOCKED
+                else:
+                    ship.status = ShipStatus.FLYING if ship.hp > ship.max_hp * 0.3 else ShipStatus.DAMAGED
+
+        _finalize_joint_battle_report(battle, state, action_records, ship_a, ship_b, ship_c)
+
+
+def _resolve_joint_boarding(ship_a: Airship, ship_c: Optional[Airship], ship_b: Airship,
+                             battle: Battle, state: GameState,
+                             action_records: List[BattleActionRecord]) -> None:
+    attack_marines_a = [c for c in ship_a.crew.values() if c.role == CrewRole.MARINE and c.health > 20]
+    attack_crewmen_a = [c for c in ship_a.crew.values() if c.role == CrewRole.CREWMAN and c.health > 20]
+    attack_power_a = sum(c.skill for c in attack_marines_a) * 1.5 + sum(c.skill for c in attack_crewmen_a) * 0.5
+    attack_power_a += ship_a.morale * 0.2
+
+    attack_power_c = 0
+    attack_marines_c = []
+    if ship_c:
+        attack_marines_c = [c for c in ship_c.crew.values() if c.role == CrewRole.MARINE and c.health > 20]
+        attack_crewmen_c = [c for c in ship_c.crew.values() if c.role == CrewRole.CREWMAN and c.health > 20]
+        attack_power_c = sum(c.skill for c in attack_marines_c) * 1.5 + sum(c.skill for c in attack_crewmen_c) * 0.5
+        attack_power_c += ship_c.morale * 0.2
+
+    combined_attack_power = attack_power_a + attack_power_c
+
+    defend_marines = [c for c in ship_b.crew.values() if c.role == CrewRole.MARINE and c.health > 20]
+    defend_crewmen = [c for c in ship_b.crew.values() if c.role == CrewRole.CREWMAN and c.health > 20]
+    defend_power = sum(c.skill for c in defend_marines) * 1.5 + sum(c.skill for c in defend_crewmen) * 0.5
+    defend_power += ship_b.morale * 0.2
+
+    total_marines = len(attack_marines_a) + len(attack_marines_c)
+    battle.log.append(f"Joint boarding! Attackers: {total_marines} marines, Defenders: {len(defend_marines)} marines")
+    action_records.append(BattleActionRecord(
+        turn=battle.turn, action_type="joint_board",
+        attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+        defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+        target_module="", damage=0, hit=True,
+        special_effect=f"joint_boarding_{total_marines}v{len(defend_marines)}", category="attack"
+    ))
+
+    ratio = combined_attack_power / max(combined_attack_power + defend_power, 1)
+
+    for _ in range(3):
+        if ratio > 0.5:
+            casualties_def = random.randint(1, max(1, int(len(defend_marines) * 0.25 + len(defend_crewmen) * 0.1)))
+            for _ in range(min(casualties_def, len(defend_marines))):
+                if defend_marines:
+                    m = defend_marines.pop()
+                    m.health = max(0, m.health - random.randint(30, 70))
+            ship_b.morale = max(0, ship_b.morale - 10)
+        else:
+            attacker_list = attack_marines_a if random.random() < 0.5 else attack_marines_c
+            casualties_att = random.randint(1, max(1, int(len(attacker_list) * 0.2)))
+            for _ in range(min(casualties_att, len(attacker_list))):
+                if attacker_list:
+                    m = attacker_list.pop()
+                    m.health = max(0, m.health - random.randint(30, 70))
+            ship_a.morale = max(0, ship_a.morale - 5)
+            if ship_c:
+                ship_c.morale = max(0, ship_c.morale - 5)
+
+    total_attack_morale = ship_a.morale
+    if ship_c:
+        total_attack_morale = (ship_a.morale + ship_c.morale) / 2
+    total_defend_morale = ship_b.morale + sum(c.morale for c in defend_marines) / max(len(defend_marines), 1) * 0.5
+
+    if total_attack_morale > total_defend_morale * 1.3 or not defend_marines:
+        battle.winner = f"joint_{ship_a.player_id}_{ship_c.player_id if ship_c else ''}"
+        ship_b.status = ShipStatus.DISABLED
+        battle.log.append(f"Joint boarding successful! {ship_a.name} & {ship_c.name if ship_c else ''} capture {ship_b.name}!")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn, action_type="joint_capture",
+            attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+            defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+            target_module="", damage=0, hit=True,
+            special_effect="joint_captured", category="attack"
+        ))
+    elif total_defend_morale > total_attack_morale * 1.3:
+        battle.winner = ship_b.player_id
+        battle.log.append(f"Joint boarding repelled! {ship_b.name} defends against the pincer attack!")
+        for c in attack_marines_a:
+            c.health = max(0, c.health - random.randint(20, 50))
+        if ship_c:
+            for c in attack_marines_c:
+                c.health = max(0, c.health - random.randint(20, 50))
+
+
+def _finalize_joint_battle_report(battle: Battle, state: GameState,
+                                   action_records: List[BattleActionRecord],
+                                   ship_a: Airship, ship_b: Airship,
+                                   ship_c: Optional[Airship]) -> None:
+    is_sink = ship_b.hp <= 0 or ship_a.hp <= 0
+    is_capture = ship_b.status == ShipStatus.DISABLED
+
+    result = "ongoing"
+    if battle.winner:
+        if is_sink:
+            result = "sink"
+        elif is_capture:
+            result = "capture"
+        else:
+            result = "joint_victory"
+    elif battle.phase == BattlePhase.ENDED and not battle.winner:
+        result = "draw"
+
+    loot_split: Dict[str, int] = {}
+    if battle.winner and is_capture:
+        total_damage = battle.attacker_a_damage_total + battle.attacker_b_damage_total
+        loot_value = 0
+        for cargo in ship_b.cargo:
+            loot_value += cargo.base_value * cargo.amount
+        defender_player = next((p for p in state.players if p.id == ship_b.player_id), None)
+        if defender_player:
+            cash_loot = min(defender_player.wealth, 1500)
+            loot_value += cash_loot
+            defender_player.wealth -= cash_loot
+
+        if total_damage > 0:
+            a_share = int(loot_value * (battle.attacker_a_damage_total / total_damage))
+            c_share = loot_value - a_share
+        else:
+            a_share = loot_value // 2
+            c_share = loot_value - a_share
+
+        proposer_player = next((p for p in state.players if p.id == ship_a.player_id), None)
+        if proposer_player:
+            proposer_player.wealth += a_share
+
+        for cargo in list(ship_b.cargo):
+            cargo_value = cargo.base_value * cargo.amount
+            if total_damage > 0:
+                a_cargo_share = max(1, int(cargo.amount * (battle.attacker_a_damage_total / total_damage)))
+            else:
+                a_cargo_share = cargo.amount // 2
+            c_cargo_share = cargo.amount - a_cargo_share
+
+            if a_cargo_share > 0:
+                ship_a.cargo.append(Cargo(type=cargo.type, amount=a_cargo_share, base_value=cargo.base_value))
+            if ship_c and c_cargo_share > 0:
+                ship_c.cargo.append(Cargo(type=cargo.type, amount=c_cargo_share, base_value=cargo.base_value))
+
+        ship_b.cargo = []
+
+        loot_split[ship_a.player_id] = a_share
+        if ship_c:
+            ally_player = next((p for p in state.players if p.id == ship_c.player_id), None)
+            if ally_player:
+                ally_player.wealth += c_share
+            loot_split[ship_c.player_id] = c_share
+
+    elif battle.winner and is_sink:
+        defender_player = next((p for p in state.players if p.id == ship_b.player_id), None)
+        if defender_player:
+            total_damage = battle.attacker_a_damage_total + battle.attacker_b_damage_total
+            salvage = min(defender_player.wealth // 3, 500)
+            defender_player.wealth -= salvage
+            if total_damage > 0:
+                a_share = int(salvage * (battle.attacker_a_damage_total / total_damage))
+                c_share = salvage - a_share
+            else:
+                a_share = salvage // 2
+                c_share = salvage - a_share
+
+            proposer_player = next((p for p in state.players if p.id == ship_a.player_id), None)
+            if proposer_player:
+                proposer_player.wealth += a_share
+
+            if ship_c:
+                ally_player = next((p for p in state.players if p.id == ship_c.player_id), None)
+                if ally_player:
+                    ally_player.wealth += c_share
+
+            loot_split[ship_a.player_id] = a_share
+            if ship_c:
+                loot_split[ship_c.player_id] = c_share
+
+    winner_ship_name = ""
+    if battle.winner:
+        winner_ship_name = f"{ship_a.name} & {ship_c.name if ship_c else ''}"
+
+    report = BattleReport(
+        id=f"report_{_generate_id()}",
+        battle_id=battle.id,
+        attacker_ship_id=ship_a.id,
+        attacker_ship_name=ship_a.name,
+        attacker_player_id=ship_a.player_id,
+        defender_ship_id=ship_b.id,
+        defender_ship_name=ship_b.name,
+        defender_player_id=ship_b.player_id,
+        result=result,
+        winner_player_id=battle.winner,
+        winner_ship_name=winner_ship_name,
+        duration_turns=battle.turn,
+        action_records=action_records,
+        is_sink=is_sink,
+        is_capture=is_capture,
+        turn_number=state.turn,
+        is_joint_combat=True,
+        attacker_b_ship_id=ship_c.id if ship_c else "",
+        attacker_b_ship_name=ship_c.name if ship_c else "",
+        attacker_b_player_id=ship_c.player_id if ship_c else "",
+        loot_split=loot_split
+    )
+
+    state.battle_reports.append(report)
+    if len(state.battle_reports) > 30:
+        state.battle_reports = state.battle_reports[-30:]
+
+    state.event_log.append(
+        f"Joint combat resolved: {ship_a.name} & {ship_c.name if ship_c else ''} vs {ship_b.name} - {result}"
+    )
+
+
+def _finalize_joint_combat_proposals(state: GameState) -> None:
+    for proposal in state.joint_combat_proposals:
+        if proposal.status != JointCombatStatus.ACTIVE:
+            continue
+        ship_a = next((a for a in state.airships if a.id == proposal.proposer_ship_id), None)
+        ship_c = next((a for a in state.airships if a.id == proposal.ally_ship_id), None)
+        ship_b = next((a for a in state.airships if a.id == proposal.target_ship_id), None)
+        target_destroyed = ship_b and ship_b.status == ShipStatus.DESTROYED
+        all_out_of_battle = (
+            (ship_a is None or ship_a.in_battle_id is None) and
+            (ship_c is None or ship_c.in_battle_id is None) and
+            (ship_b is None or ship_b.in_battle_id is None)
+        )
+        if target_destroyed or all_out_of_battle:
+            proposal.status = JointCombatStatus.COMPLETED
+            if target_destroyed and ship_b:
+                state.event_log.append(f"✅ Joint combat against {ship_b.name} completed successfully!")
+            else:
+                state.event_log.append(f"ℹ️ Joint combat proposal (id={proposal.id}) finalized")
+
+
+def resolve_joint_combat(state: GameState) -> GameState:
+    active_proposals = [
+        p for p in state.joint_combat_proposals
+        if p.status == JointCombatStatus.CONFIRMED and p.attack_turn == state.turn
+    ]
+
+    for proposal in active_proposals:
+        ship_a = next((a for a in state.airships if a.id == proposal.proposer_ship_id), None)
+        ship_c = next((a for a in state.airships if a.id == proposal.ally_ship_id), None)
+        ship_b = next((a for a in state.airships if a.id == proposal.target_ship_id), None)
+
+        if not ship_a or not ship_c or not ship_b:
+            proposal.status = JointCombatStatus.CANCELLED
+            state.event_log.append(f"Joint combat cancelled - required ships not available")
+            continue
+
+        if ship_a.status in [ShipStatus.DESTROYED, ShipStatus.DISABLED]:
+            proposal.status = JointCombatStatus.CANCELLED
+            continue
+        if ship_c.status in [ShipStatus.DESTROYED, ShipStatus.DISABLED]:
+            proposal.status = JointCombatStatus.CANCELLED
+            continue
+        if ship_b.status in [ShipStatus.DESTROYED]:
+            proposal.status = JointCombatStatus.CANCELLED
+            continue
+
+        if ship_a.in_battle_id or ship_c.in_battle_id or ship_b.in_battle_id:
+            proposal.status = JointCombatStatus.CANCELLED
+            state.event_log.append(f"Joint combat cancelled - one of the ships is already in battle")
+            continue
+
+        alliance = get_alliance(state, proposal.proposer_id, proposal.ally_id)
+        if not alliance or not alliance.active or alliance.trust_level < 3:
+            proposal.status = JointCombatStatus.CANCELLED
+            state.event_log.append(f"Joint combat cancelled - alliance no longer valid")
+            continue
+
+        target_pos = ship_b.position
+        dist_a = _distance(ship_a.position, target_pos)
+        dist_c = _distance(ship_c.position, target_pos)
+
+        if dist_a > 150:
+            if dist_a > 300:
+                proposal.status = JointCombatStatus.CANCELLED
+                state.event_log.append(f"Joint combat cancelled - {ship_a.name} too far from target")
+                continue
+            angle = math.atan2(target_pos.y - ship_a.position.y, target_pos.x - ship_a.position.x)
+            ship_a.position = Position(
+                x=target_pos.x - math.cos(angle) * 60,
+                y=target_pos.y - math.sin(angle) * 60
+            )
+
+        if dist_c > 150:
+            if dist_c > 300:
+                proposal.status = JointCombatStatus.CANCELLED
+                state.event_log.append(f"Joint combat cancelled - {ship_c.name} too far from target")
+                continue
+            angle = math.atan2(target_pos.y - ship_c.position.y, target_pos.x - ship_c.position.x)
+            ship_c.position = Position(
+                x=target_pos.x - math.cos(angle) * 60,
+                y=target_pos.y - math.sin(angle) * 60
+            )
+
+        battle = Battle(
+            id=f"battle_{_generate_id()}",
+            ship_a_id=ship_a.id,
+            ship_b_id=ship_b.id,
+            phase=BattlePhase.INITIATION,
+            turn=0,
+            ship_a_morale=ship_a.morale,
+            ship_b_morale=ship_b.morale,
+            log=[f"Joint combat! {ship_a.name} & {ship_c.name} attack {ship_b.name} from both flanks!"],
+            is_joint_combat=True,
+            ship_c_id=ship_c.id,
+            ship_c_morale=ship_c.morale,
+            defender_facing="port"
+        )
+
+        state.battles.append(battle)
+        ship_a.in_battle_id = battle.id
+        ship_b.in_battle_id = battle.id
+        ship_c.in_battle_id = battle.id
+        ship_a.status = ShipStatus.BATTLING
+        ship_b.status = ShipStatus.BATTLING
+        ship_c.status = ShipStatus.BATTLING
+
+        proposal.status = JointCombatStatus.ACTIVE
+        state.event_log.append(f"⚔️ JOINT COMBAT: {ship_a.name} & {ship_c.name} engage {ship_b.name} in pincer attack!")
+
+    for proposal in state.joint_combat_proposals:
+        if proposal.status == JointCombatStatus.CONFIRMED and proposal.attack_turn < state.turn:
+            proposal.status = JointCombatStatus.CANCELLED
+            state.event_log.append(f"Joint combat proposal expired (attack turn {proposal.attack_turn} passed)")
+
+    return state
 
 
 def start_game(state: GameState) -> GameState:
