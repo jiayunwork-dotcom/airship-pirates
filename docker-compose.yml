@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: airship-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - airship-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: airship-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite:///./airship.db
+    depends_on:
+      - redis
+    volumes:
+      - ./backend:/app
+    networks:
+      - airship-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: airship-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - airship-network
+
+volumes:
+  redis_data:
+
+networks:
+  airship-network:
+    driver: bridge
