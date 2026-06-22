@@ -244,6 +244,41 @@ class Weather(BaseModel):
     wind_speed: float = 0.0
 
 
+class BattleActionRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    turn: int = 0
+    action_type: str = "attack"
+    attacker_ship_id: str = ""
+    attacker_ship_name: str = ""
+    defender_ship_id: str = ""
+    defender_ship_name: str = ""
+    target_module: str = ""
+    damage: int = 0
+    hit: bool = True
+    special_effect: str = ""
+    category: str = "attack"
+
+
+class BattleReport(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str = ""
+    battle_id: str = ""
+    attacker_ship_id: str = ""
+    attacker_ship_name: str = ""
+    attacker_player_id: str = ""
+    defender_ship_id: str = ""
+    defender_ship_name: str = ""
+    defender_player_id: str = ""
+    result: str = ""
+    winner_player_id: Optional[str] = None
+    winner_ship_name: str = ""
+    duration_turns: int = 0
+    action_records: List[BattleActionRecord] = Field(default_factory=list)
+    is_sink: bool = False
+    is_capture: bool = False
+    turn_number: int = 0
+
+
 class BattleAction(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: ActionType
@@ -297,6 +332,7 @@ class GameState(BaseModel):
     winner: Optional[str] = None
     scores: Dict[str, int] = Field(default_factory=dict)
     event_log: List[str] = Field(default_factory=list)
+    battle_reports: List[BattleReport] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 

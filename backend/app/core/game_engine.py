@@ -6,7 +6,8 @@ from app.models.game_models import (
     GameState, Player, Airship, City, Waypoint, Weather, Battle, BattleAction,
     Order, GasBalloon, ShipModule, CrewMember, Cargo, TradeGood, Position,
     AltitudeLevel, ModuleType, GasType, WeatherType, ActionType, BattlePhase,
-    ShipStatus, CityType, CargoType, CrewRole, ModuleTarget
+    ShipStatus, CityType, CargoType, CrewRole, ModuleTarget,
+    BattleActionRecord, BattleReport
 )
 from app.core.config import settings
 
@@ -595,27 +596,62 @@ def _calculate_defense(ship: Airship) -> float:
     return (armor * 0.01) + pilot_bonus
 
 
-def _apply_damage(ship: Airship, damage: int, target: ModuleTarget, state: GameState, battle: Battle) -> None:
+def _apply_damage(ship: Airship, damage: int, target: ModuleTarget, state: GameState, battle: Battle,
+                  attacker_ship: Airship, action_records: List[BattleActionRecord]) -> None:
     defense = _calculate_defense(ship)
     actual_damage = int(damage * (1 - min(defense, 0.6)))
     
     if actual_damage <= 0:
         battle.log.append(f"{ship.name} deflects the attack!")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn,
+            action_type="attack",
+            attacker_ship_id=attacker_ship.id,
+            attacker_ship_name=attacker_ship.name,
+            defender_ship_id=ship.id,
+            defender_ship_name=ship.name,
+            target_module=target.value,
+            damage=0,
+            hit=False,
+            special_effect="deflect",
+            category="defense"
+        ))
         return
     
     if target == ModuleTarget.BALLOON:
         ship.gas_balloon.durability = max(0, ship.gas_balloon.durability - actual_damage)
         ship.hp = max(0, ship.hp - int(actual_damage * 0.3))
         battle.log.append(f"Direct hit to {ship.name}'s balloon! -{actual_damage} durability")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn, action_type="attack",
+            attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+            defender_ship_id=ship.id, defender_ship_name=ship.name,
+            target_module="balloon", damage=actual_damage, hit=True,
+            special_effect="", category="attack"
+        ))
         if ship.gas_balloon.durability <= 0:
             ship.hp = 0
             battle.log.append(f"{ship.name}'s balloon has been destroyed!")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="balloon_destroyed",
+                attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+                defender_ship_id=ship.id, defender_ship_name=ship.name,
+                target_module="balloon", damage=actual_damage, hit=True,
+                special_effect="balloon_destroyed", category="attack"
+            ))
     elif target == ModuleTarget.COCKPIT:
         cockpit = next((m for m in ship.modules if m.module_type == ModuleType.COCKPIT), None)
         if cockpit:
             cockpit.durability = max(0, cockpit.durability - actual_damage)
             ship.hp = max(0, ship.hp - int(actual_damage * 0.5))
             battle.log.append(f"Command cockpit hit! -{actual_damage} damage")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="attack",
+                attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+                defender_ship_id=ship.id, defender_ship_name=ship.name,
+                target_module="cockpit", damage=actual_damage, hit=True,
+                special_effect="", category="attack"
+            ))
     elif target == ModuleTarget.GUN_DECK:
         gun_decks = [m for m in ship.modules if m.module_type == ModuleType.GUN_DECK and m.durability > 0]
         if gun_decks:
@@ -623,21 +659,43 @@ def _apply_damage(ship: Airship, damage: int, target: ModuleTarget, state: GameS
             target_deck.durability = max(0, target_deck.durability - actual_damage)
             ship.hp = max(0, ship.hp - int(actual_damage * 0.4))
             battle.log.append(f"Gun deck hit! -{actual_damage} damage")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="attack",
+                attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+                defender_ship_id=ship.id, defender_ship_name=ship.name,
+                target_module="gun_deck", damage=actual_damage, hit=True,
+                special_effect="", category="attack"
+            ))
     elif target == ModuleTarget.ENGINE:
         engine = next((m for m in ship.modules if m.module_type == ModuleType.ENGINE), None)
         if engine:
             engine.durability = max(0, engine.durability - actual_damage)
             ship.hp = max(0, ship.hp - int(actual_damage * 0.4))
             battle.log.append(f"Engine hit! -{actual_damage} damage")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="attack",
+                attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+                defender_ship_id=ship.id, defender_ship_name=ship.name,
+                target_module="engine", damage=actual_damage, hit=True,
+                special_effect="", category="attack"
+            ))
     elif target == ModuleTarget.CARGO:
         cargo_mod = next((m for m in ship.modules if m.module_type == ModuleType.CARGO), None)
         if cargo_mod:
             cargo_mod.durability = max(0, cargo_mod.durability - actual_damage)
+            lost = 0
             if ship.cargo:
                 lost = random.randint(0, min(actual_damage, len(ship.cargo)))
                 if lost > 0:
                     ship.cargo = ship.cargo[:-lost]
                     battle.log.append(f"Cargo hit! Lost {lost} cargo units")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="attack",
+                attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+                defender_ship_id=ship.id, defender_ship_name=ship.name,
+                target_module="cargo", damage=actual_damage, hit=True,
+                special_effect=f"lost_{lost}_cargo" if lost > 0 else "", category="attack"
+            ))
     else:
         target_pool = [m for m in ship.modules if m.durability > 0]
         if target_pool:
@@ -645,13 +703,28 @@ def _apply_damage(ship: Airship, damage: int, target: ModuleTarget, state: GameS
             hit_mod.durability = max(0, hit_mod.durability - actual_damage)
         ship.hp = max(0, ship.hp - actual_damage)
         battle.log.append(f"{ship.name} takes -{actual_damage} damage")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn, action_type="attack",
+            attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+            defender_ship_id=ship.id, defender_ship_name=ship.name,
+            target_module="any", damage=actual_damage, hit=True,
+            special_effect="", category="attack"
+        ))
     
     if ship.hp <= 0:
         ship.status = ShipStatus.DESTROYED
         battle.log.append(f"{ship.name} has been destroyed!")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn, action_type="sink",
+            attacker_ship_id=attacker_ship.id, attacker_ship_name=attacker_ship.name,
+            defender_ship_id=ship.id, defender_ship_name=ship.name,
+            target_module="", damage=0, hit=True,
+            special_effect="sunk", category="attack"
+        ))
 
 
-def _resolve_boarding(ship_attacker: Airship, ship_defender: Airship, battle: Battle, state: GameState) -> None:
+def _resolve_boarding(ship_attacker: Airship, ship_defender: Airship, battle: Battle, state: GameState,
+                       action_records: List[BattleActionRecord]) -> None:
     attack_marines = [c for c in ship_attacker.crew.values() if c.role == CrewRole.MARINE and c.health > 20]
     defend_marines = [c for c in ship_defender.crew.values() if c.role == CrewRole.MARINE and c.health > 20]
     attack_crewmen = [c for c in ship_attacker.crew.values() if c.role == CrewRole.CREWMAN and c.health > 20]
@@ -663,6 +736,13 @@ def _resolve_boarding(ship_attacker: Airship, ship_defender: Airship, battle: Ba
     defend_power += ship_defender.morale * 0.2
     
     battle.log.append(f"Boarding action! Attackers: {len(attack_marines)} marines, Defenders: {len(defend_marines)} marines")
+    action_records.append(BattleActionRecord(
+        turn=battle.turn, action_type="board",
+        attacker_ship_id=ship_attacker.id, attacker_ship_name=ship_attacker.name,
+        defender_ship_id=ship_defender.id, defender_ship_name=ship_defender.name,
+        target_module="", damage=0, hit=True,
+        special_effect=f"boarding_attack_{len(attack_marines)}v{len(defend_marines)}", category="attack"
+    ))
     
     ratio = attack_power / max(attack_power + defend_power, 1)
     
@@ -689,6 +769,13 @@ def _resolve_boarding(ship_attacker: Airship, ship_defender: Airship, battle: Ba
         battle.winner = ship_attacker.player_id
         ship_defender.status = ShipStatus.DISABLED
         battle.log.append(f"Boarding successful! {ship_attacker.name} captures {ship_defender.name}!")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn, action_type="capture",
+            attacker_ship_id=ship_attacker.id, attacker_ship_name=ship_attacker.name,
+            defender_ship_id=ship_defender.id, defender_ship_name=ship_defender.name,
+            target_module="", damage=0, hit=True,
+            special_effect="captured", category="attack"
+        ))
         
         attacker_player = next((p for p in state.players if p.id == ship_attacker.player_id), None)
         if attacker_player:
@@ -710,6 +797,13 @@ def _resolve_boarding(ship_attacker: Airship, ship_defender: Airship, battle: Ba
     elif total_defend_morale > total_attack_morale * 1.3:
         battle.winner = ship_defender.player_id
         battle.log.append(f"Boarding repelled! {ship_defender.name} defends successfully!")
+        action_records.append(BattleActionRecord(
+            turn=battle.turn, action_type="board_repelled",
+            attacker_ship_id=ship_attacker.id, attacker_ship_name=ship_attacker.name,
+            defender_ship_id=ship_defender.id, defender_ship_name=ship_defender.name,
+            target_module="", damage=0, hit=True,
+            special_effect="repelled", category="defense"
+        ))
         for c in attack_marines:
             c.health = max(0, c.health - random.randint(20, 50))
 
@@ -733,6 +827,8 @@ def _resolve_single_battle(battle: Battle, state: GameState) -> None:
         battle.log.append(f"Battle ended: {ship_a.name} wins by default")
         return
     
+    action_records: List[BattleActionRecord] = []
+    
     battle.turn += 1
     
     if battle.smoke_screen_turns > 0:
@@ -740,6 +836,13 @@ def _resolve_single_battle(battle: Battle, state: GameState) -> None:
         if battle.smoke_screen_turns == 0:
             battle.smoke_screen_active = False
             battle.log.append("Smoke screen dissipates")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="smoke_dissipate",
+                attacker_ship_id="", attacker_ship_name="",
+                defender_ship_id="", defender_ship_name="",
+                target_module="", damage=0, hit=True,
+                special_effect="smoke_dissipated", category="neutral"
+            ))
     
     if battle.phase == BattlePhase.INITIATION:
         battle.phase = BattlePhase.RANGED
@@ -758,14 +861,36 @@ def _resolve_single_battle(battle: Battle, state: GameState) -> None:
                 ship_b.status = ShipStatus.FLYING if ship_b.current_city_id is None else ShipStatus.DOCKED
                 battle.log.append(f"{ship_a.name} successfully retreats!")
                 state.event_log.append(f"{ship_a.name} retreated from battle")
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="retreat",
+                    attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+                    defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+                    target_module="", damage=0, hit=True,
+                    special_effect="retreat_success", category="neutral"
+                ))
+                _finalize_battle_report(battle, state, action_records, ship_a, ship_b)
                 return
             else:
                 battle.log.append(f"{ship_a.name} failed to retreat!")
                 ship_a.morale = max(0, ship_a.morale - 10)
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="retreat_fail",
+                    attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+                    defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+                    target_module="", damage=0, hit=False,
+                    special_effect="retreat_failed", category="neutral"
+                ))
         elif action.type == ActionType.BOARD:
             battle.ship_a_boarded = True
             battle.phase = BattlePhase.BOARDING
             battle.log.append(f"{ship_a.name} moves to board {ship_b.name}")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="board_initiate",
+                attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+                defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+                target_module="", damage=0, hit=True,
+                special_effect="boarding_initiated", category="attack"
+            ))
     
     for action in defender_actions:
         if action.type == ActionType.RETREAT:
@@ -778,72 +903,146 @@ def _resolve_single_battle(battle: Battle, state: GameState) -> None:
                 ship_b.status = ShipStatus.FLYING if ship_b.current_city_id is None else ShipStatus.DOCKED
                 battle.log.append(f"{ship_b.name} successfully retreats!")
                 state.event_log.append(f"{ship_b.name} retreated from battle")
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="retreat",
+                    attacker_ship_id=ship_b.id, attacker_ship_name=ship_b.name,
+                    defender_ship_id=ship_a.id, defender_ship_name=ship_a.name,
+                    target_module="", damage=0, hit=True,
+                    special_effect="retreat_success", category="neutral"
+                ))
+                _finalize_battle_report(battle, state, action_records, ship_a, ship_b)
                 return
             else:
                 battle.log.append(f"{ship_b.name} failed to retreat!")
                 ship_b.morale = max(0, ship_b.morale - 10)
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="retreat_fail",
+                    attacker_ship_id=ship_b.id, attacker_ship_name=ship_b.name,
+                    defender_ship_id=ship_a.id, defender_ship_name=ship_a.name,
+                    target_module="", damage=0, hit=False,
+                    special_effect="retreat_failed", category="neutral"
+                ))
     
     if battle.phase == BattlePhase.RANGED:
         for action in attacker_actions:
             if action.type == ActionType.ATTACK:
                 if battle.smoke_screen_active and random.random() < settings.smoke_screen_miss_chance:
                     battle.log.append(f"{ship_a.name}'s attack misses due to smoke screen!")
+                    action_records.append(BattleActionRecord(
+                        turn=battle.turn, action_type="attack",
+                        attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+                        defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+                        target_module=(action.target_module or ModuleTarget.ANY).value,
+                        damage=0, hit=False,
+                        special_effect="smoke_screen_miss", category="attack"
+                    ))
                     continue
                 
                 damage = _calculate_ship_attack_power(ship_a, action)
                 target = action.target_module or ModuleTarget.ANY
-                _apply_damage(ship_b, damage, target, state, battle)
+                _apply_damage(ship_b, damage, target, state, battle, ship_a, action_records)
                 
                 if action.weapon_type == "incendiary" and ship_b.gas_balloon.flammable:
                     if random.random() < 0.3:
                         ship_b.gas_balloon.on_fire = True
                         ship_b.gas_balloon.fire_damage_remaining = settings.incendiary_dot_damage * 3
                         battle.log.append(f"{ship_b.name}'s balloon catches fire!")
+                        action_records.append(BattleActionRecord(
+                            turn=battle.turn, action_type="fire",
+                            attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+                            defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+                            target_module="balloon", damage=0, hit=True,
+                            special_effect="balloon_on_fire", category="attack"
+                        ))
         
         for action in defender_actions:
             if action.type == ActionType.ATTACK:
                 if battle.smoke_screen_active and random.random() < settings.smoke_screen_miss_chance:
                     battle.log.append(f"{ship_b.name}'s attack misses due to smoke screen!")
+                    action_records.append(BattleActionRecord(
+                        turn=battle.turn, action_type="attack",
+                        attacker_ship_id=ship_b.id, attacker_ship_name=ship_b.name,
+                        defender_ship_id=ship_a.id, defender_ship_name=ship_a.name,
+                        target_module=(action.target_module or ModuleTarget.ANY).value,
+                        damage=0, hit=False,
+                        special_effect="smoke_screen_miss", category="attack"
+                    ))
                     continue
                 
                 damage = _calculate_ship_attack_power(ship_b, action)
                 target = action.target_module or ModuleTarget.ANY
-                _apply_damage(ship_a, damage, target, state, battle)
+                _apply_damage(ship_a, damage, target, state, battle, ship_b, action_records)
                 
                 if action.weapon_type == "incendiary" and ship_a.gas_balloon.flammable:
                     if random.random() < 0.3:
                         ship_a.gas_balloon.on_fire = True
                         ship_a.gas_balloon.fire_damage_remaining = settings.incendiary_dot_damage * 3
                         battle.log.append(f"{ship_a.name}'s balloon catches fire!")
+                        action_records.append(BattleActionRecord(
+                            turn=battle.turn, action_type="fire",
+                            attacker_ship_id=ship_b.id, attacker_ship_name=ship_b.name,
+                            defender_ship_id=ship_a.id, defender_ship_name=ship_a.name,
+                            target_module="balloon", damage=0, hit=True,
+                            special_effect="balloon_on_fire", category="attack"
+                        ))
             
             if action.type == ActionType.ATTACK and action.params.get("smoke_screen"):
                 battle.smoke_screen_active = True
                 battle.smoke_screen_turns = 2
                 battle.log.append(f"{ship_b.name} deploys smoke screen!")
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="smoke_screen",
+                    attacker_ship_id=ship_b.id, attacker_ship_name=ship_b.name,
+                    defender_ship_id=ship_a.id, defender_ship_name=ship_a.name,
+                    target_module="", damage=0, hit=True,
+                    special_effect="smoke_deployed", category="defense"
+                ))
         
         for action in attacker_actions:
             if action.type == ActionType.ATTACK and action.params.get("smoke_screen"):
                 battle.smoke_screen_active = True
                 battle.smoke_screen_turns = 2
                 battle.log.append(f"{ship_a.name} deploys smoke screen!")
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="smoke_screen",
+                    attacker_ship_id=ship_a.id, attacker_ship_name=ship_a.name,
+                    defender_ship_id=ship_b.id, defender_ship_name=ship_b.name,
+                    target_module="", damage=0, hit=True,
+                    special_effect="smoke_deployed", category="defense"
+                ))
     
     for ship in [ship_a, ship_b]:
         if ship.gas_balloon.on_fire and ship.gas_balloon.fire_damage_remaining > 0:
+            other = ship_b if ship == ship_a else ship_a
             fd = settings.incendiary_dot_damage
             ship.gas_balloon.durability = max(0, ship.gas_balloon.durability - fd)
             ship.hp = max(0, ship.hp - fd // 2)
             ship.gas_balloon.fire_damage_remaining -= fd
             battle.log.append(f"{ship.name} takes {fd} fire damage")
+            action_records.append(BattleActionRecord(
+                turn=battle.turn, action_type="fire_damage",
+                attacker_ship_id=other.id, attacker_ship_name=other.name,
+                defender_ship_id=ship.id, defender_ship_name=ship.name,
+                target_module="balloon", damage=fd, hit=True,
+                special_effect="burning_dot", category="attack"
+            ))
             if random.random() < 0.2:
                 ship.gas_balloon.on_fire = False
                 ship.gas_balloon.fire_damage_remaining = 0
                 battle.log.append(f"Crew extinguishes fire on {ship.name}!")
+                action_records.append(BattleActionRecord(
+                    turn=battle.turn, action_type="fire_extinguish",
+                    attacker_ship_id="", attacker_ship_name="",
+                    defender_ship_id=ship.id, defender_ship_name=ship.name,
+                    target_module="balloon", damage=0, hit=True,
+                    special_effect="fire_extinguished", category="neutral"
+                ))
     
     if battle.phase == BattlePhase.BOARDING:
         if battle.ship_a_boarded:
-            _resolve_boarding(ship_a, ship_b, battle, state)
+            _resolve_boarding(ship_a, ship_b, battle, state, action_records)
         else:
-            _resolve_boarding(ship_b, ship_a, battle, state)
+            _resolve_boarding(ship_b, ship_a, battle, state, action_records)
     
     if ship_a.hp <= 0:
         battle.winner = ship_b.player_id
@@ -887,6 +1086,54 @@ def _resolve_single_battle(battle: Battle, state: GameState) -> None:
                     ship.status = ShipStatus.DOCKED
                 else:
                     ship.status = ShipStatus.FLYING if ship.hp > ship.max_hp * 0.3 else ShipStatus.DAMAGED
+        
+        _finalize_battle_report(battle, state, action_records, ship_a, ship_b)
+
+
+def _finalize_battle_report(battle: Battle, state: GameState, action_records: List[BattleActionRecord],
+                             ship_a: Airship, ship_b: Airship) -> None:
+    is_sink = ship_a.hp <= 0 or ship_b.hp <= 0
+    is_capture = ship_a.status == ShipStatus.DISABLED or ship_b.status == ShipStatus.DISABLED
+    
+    result = "ongoing"
+    if battle.winner:
+        if is_sink:
+            result = "sink"
+        elif is_capture:
+            result = "capture"
+        else:
+            result = "victory"
+    elif battle.phase == BattlePhase.ENDED and not battle.winner:
+        result = "draw"
+    
+    winner_ship_name = ""
+    if battle.winner == ship_a.player_id:
+        winner_ship_name = ship_a.name
+    elif battle.winner == ship_b.player_id:
+        winner_ship_name = ship_b.name
+    
+    report = BattleReport(
+        id=f"report_{_generate_id()}",
+        battle_id=battle.id,
+        attacker_ship_id=ship_a.id,
+        attacker_ship_name=ship_a.name,
+        attacker_player_id=ship_a.player_id,
+        defender_ship_id=ship_b.id,
+        defender_ship_name=ship_b.name,
+        defender_player_id=ship_b.player_id,
+        result=result,
+        winner_player_id=battle.winner,
+        winner_ship_name=winner_ship_name,
+        duration_turns=battle.turn,
+        action_records=action_records,
+        is_sink=is_sink,
+        is_capture=is_capture,
+        turn_number=state.turn
+    )
+    
+    state.battle_reports.append(report)
+    if len(state.battle_reports) > 20:
+        state.battle_reports = state.battle_reports[-20:]
 
 
 def resolve_battles(state: GameState) -> GameState:

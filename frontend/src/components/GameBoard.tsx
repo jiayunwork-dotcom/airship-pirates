@@ -2,6 +2,7 @@ import { createMemo, For, Show, createSignal, onMount } from 'solid-js';
 import { useGameStore } from '../store/gameStore';
 import AirshipPanel from './AirshipPanel';
 import ModuleBuilder from './ModuleBuilder';
+import BattleReportPanel from './BattleReportPanel';
 import { ActionType, AltitudeLevel, WeatherType } from '../types/game';
 import type { Airship, City, Waypoint, Weather, Order } from '../types/game';
 import type { Component } from 'solid-js';
@@ -1085,6 +1086,8 @@ const GameBoard: Component<{ onLeaveHome: () => void }> = (props) => {
           mode="modify"
         />
       </Show>
+
+      <BattleReportPanel />
     </div>
   );
 };

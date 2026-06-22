@@ -226,6 +226,39 @@ export interface Weather {
   wind_speed: number;
 }
 
+export interface BattleActionRecord {
+  turn: number;
+  action_type: string;
+  attacker_ship_id: string;
+  attacker_ship_name: string;
+  defender_ship_id: string;
+  defender_ship_name: string;
+  target_module: string;
+  damage: number;
+  hit: boolean;
+  special_effect: string;
+  category: 'attack' | 'defense' | 'neutral';
+}
+
+export interface BattleReport {
+  id: string;
+  battle_id: string;
+  attacker_ship_id: string;
+  attacker_ship_name: string;
+  attacker_player_id: string;
+  defender_ship_id: string;
+  defender_ship_name: string;
+  defender_player_id: string;
+  result: string;
+  winner_player_id: string | null;
+  winner_ship_name: string;
+  duration_turns: number;
+  action_records: BattleActionRecord[];
+  is_sink: boolean;
+  is_capture: boolean;
+  turn_number: number;
+}
+
 export interface BattleAction {
   type: ActionType;
   target_module?: ModuleTarget | null;
@@ -275,6 +308,7 @@ export interface GameState {
   winner?: string | null;
   scores: Record<string, number>;
   event_log: string[];
+  battle_reports: BattleReport[];
   created_at: string;
 }
 
